@@ -25,10 +25,12 @@
 
 // ===================== 自瞄丢目标扫描参数 =====================
 #define AUTO_SCAN_LOST_DELAY_MS 120U    // 丢目标持续超过该时间后开始扫描
+#define AUTO_HOLD_ON_VALID_DROP_MS 1000U // valid 从1->0后先保持瞄准1秒
 #define AUTO_SCAN_SPEED_RAD_S   0.8f    // 扫描角速度(rad/s)
 #define AUTO_SCAN_PITCH_CENTER  0.0f    // 点头扫描中心角(rad)
 #define AUTO_SCAN_PITCH_RANGE   0.30f   // 点头扫描半幅(rad)
-#define AUTO_SCAN_PITCH_SPEED   0.8f    // 点头扫描角速度(rad/s)
+#define AUTO_SCAN_PITCH_SPEED   1.2f    // 点头扫描角速度(rad/s)
+#define AUTO_SCAN_PITCH_ACCEL   2.0f    // 点头扫描加速度(rad/s^2)，进入扫描后平滑升速
 #define GIMBAL_TASK_DT_S        0.002f  // 本任务周期2ms
 
 // ===================== 云台抗抖参数（底盘自转时优先稳态） =====================
@@ -88,7 +90,10 @@ void gimbal_task_func(void const * argument) {
     static uint8_t was_auto_mode = 0;        // 上一帧是否处于自瞄模式
     static uint8_t auto_scan_active = 0;     // 自瞄丢目标扫描状态
     static int8_t auto_scan_pitch_dir = 1;   // 点头方向：1上抬，-1下压
+    static float auto_scan_pitch_speed_cur = 0.0f; // 当前点头扫描速度，进入扫描时渐增
     static uint32_t last_target_seen_tick = 0U; // 最近一次检测到目标的时间戳
+    static uint32_t valid_drop_hold_until_tick = 0U; // valid 下降沿后的保持截止时间
+    static uint8_t last_target_valid = 0U;    // 上一帧目标有效状态，用于检测 1->0 下降沿
     static float yaw_ff_filtered = 0.0f;     // 底盘自转前馈滤波值
     static float yaw_i_term = 0.0f;          // yaw误差微积分项（仅消静差）
     float world_yaw_target = 0.0f;           // 云台世界坐标系 航向角目标值 (弧度)
@@ -213,13 +218,18 @@ void gimbal_task_func(void const * argument) {
                     if (!was_auto_mode) {
                         auto_scan_active = 0U;
                         auto_scan_pitch_dir = 1;
+                        auto_scan_pitch_speed_cur = 0.0f;
                         last_target_seen_tick = current_tick;
+                        valid_drop_hold_until_tick = 0U;
+                        last_target_valid = 0U;
                     }
 
+                    uint8_t target_valid_now = (robot_ctrl.monitor.vision_online == 1U &&
+                                                isfinite(robot_ctrl.target_info.aim_target_yaw) &&
+                                                isfinite(robot_ctrl.target_info.aim_target_pitch)) ? 1U : 0U;
+
                     // com_task 已完成视觉数据解析，这里只消费 target_info
-                    if (robot_ctrl.monitor.vision_online == 1U &&
-                        isfinite(robot_ctrl.target_info.aim_target_yaw) &&
-                        isfinite(robot_ctrl.target_info.aim_target_pitch)) {
+                    if (target_valid_now) {
                         // 指示灯反馈：自瞄模式+有目标 → 蓝灯常亮
                         LED_RED_RESET(); LED_GREEN_RESET(); LED_BLUE_SET();
                         // 直接赋值视觉解算后的目标角度，云台跟随目标
@@ -228,43 +238,69 @@ void gimbal_task_func(void const * argument) {
                         last_target_seen_tick = current_tick;
                         auto_scan_active = 0U;
                         auto_scan_pitch_dir = 1;
+                        auto_scan_pitch_speed_cur = 0.0f;
                         // 自瞄模式同样做俯仰角限位，防止视觉数据异常超限
                         if(world_pit_target > PITCH_UP_LIMIT)  world_pit_target = PITCH_UP_LIMIT;
                         if(world_pit_target < PITCH_DOWN_LIMIT)world_pit_target = PITCH_DOWN_LIMIT;
+                        valid_drop_hold_until_tick = 0U;
 
                     } else {
                         // 指示灯反馈：自瞄模式+丢目标 → 蓝灯闪烁
                         LED_RED_RESET(); LED_BLUE_Toggle(); LED_GREEN_RESET();
 
-                        if (!auto_scan_active) {
-                            if ((uint32_t)(current_tick - last_target_seen_tick) >= AUTO_SCAN_LOST_DELAY_MS) {
-                                auto_scan_active = 1U;
-                                world_pit_target = AUTO_SCAN_PITCH_CENTER;
-                                auto_scan_pitch_dir = 1;
-                            }
+                        // 仅在 valid 1->0 的下降沿触发保持窗口
+                        if (last_target_valid == 1U) {
+                            valid_drop_hold_until_tick = current_tick + AUTO_HOLD_ON_VALID_DROP_MS;
+                            last_target_seen_tick = current_tick;
+                            auto_scan_active = 0U;
+                            auto_scan_pitch_dir = 1;
+                            auto_scan_pitch_speed_cur = 0.0f;
                         }
 
-                        if (auto_scan_active) {
-                            // 连续单方向旋转，转满360度后由Rad_Format归一化。
-                            float step = AUTO_SCAN_SPEED_RAD_S * GIMBAL_TASK_DT_S;
-                            world_yaw_target = Rad_Format(world_yaw_target + step);
+                        // 保持阶段：冻结当前目标角，不进入扫描
+                        if (valid_drop_hold_until_tick != 0U &&
+                            (int32_t)(current_tick - valid_drop_hold_until_tick) < 0) {
+                            // keep aiming for 1s after valid drop
+                        } else {
+                            valid_drop_hold_until_tick = 0U;
 
-                            // Pitch 上下点头扫描，提升重新捕获目标概率。
-                            float pit_step = AUTO_SCAN_PITCH_SPEED * GIMBAL_TASK_DT_S * (float)auto_scan_pitch_dir;
-                            world_pit_target += pit_step;
-
-                            if (world_pit_target >= (AUTO_SCAN_PITCH_CENTER + AUTO_SCAN_PITCH_RANGE)) {
-                                world_pit_target = AUTO_SCAN_PITCH_CENTER + AUTO_SCAN_PITCH_RANGE;
-                                auto_scan_pitch_dir = -1;
-                            } else if (world_pit_target <= (AUTO_SCAN_PITCH_CENTER - AUTO_SCAN_PITCH_RANGE)) {
-                                world_pit_target = AUTO_SCAN_PITCH_CENTER - AUTO_SCAN_PITCH_RANGE;
-                                auto_scan_pitch_dir = 1;
+                            if (!auto_scan_active) {
+                                if ((uint32_t)(current_tick - last_target_seen_tick) >= AUTO_SCAN_LOST_DELAY_MS) {
+                                    auto_scan_active = 1U;
+                                    world_pit_target = AUTO_SCAN_PITCH_CENTER;
+                                    auto_scan_pitch_dir = 1;
+                                    auto_scan_pitch_speed_cur = 0.0f;
+                                }
                             }
 
-                            if (world_pit_target > PITCH_UP_LIMIT) world_pit_target = PITCH_UP_LIMIT;
-                            if (world_pit_target < PITCH_DOWN_LIMIT) world_pit_target = PITCH_DOWN_LIMIT;
+                            if (auto_scan_active) {
+                                // 连续单方向旋转，转满360度后由Rad_Format归一化。
+                                float step = AUTO_SCAN_SPEED_RAD_S * GIMBAL_TASK_DT_S;
+                                world_yaw_target = Rad_Format(world_yaw_target + step);
+
+                                // Pitch 扫描速度平滑上升，避免进入扫描瞬间突变。
+                                auto_scan_pitch_speed_cur += AUTO_SCAN_PITCH_ACCEL * GIMBAL_TASK_DT_S;
+                                if (auto_scan_pitch_speed_cur > AUTO_SCAN_PITCH_SPEED) {
+                                    auto_scan_pitch_speed_cur = AUTO_SCAN_PITCH_SPEED;
+                                }
+                                float pit_step = auto_scan_pitch_speed_cur * GIMBAL_TASK_DT_S * (float)auto_scan_pitch_dir;
+                                world_pit_target += pit_step;
+
+                                if (world_pit_target >= (AUTO_SCAN_PITCH_CENTER + AUTO_SCAN_PITCH_RANGE)) {
+                                    world_pit_target = AUTO_SCAN_PITCH_CENTER + AUTO_SCAN_PITCH_RANGE;
+                                    auto_scan_pitch_dir = -1;
+                                } else if (world_pit_target <= (AUTO_SCAN_PITCH_CENTER - AUTO_SCAN_PITCH_RANGE)) {
+                                    world_pit_target = AUTO_SCAN_PITCH_CENTER - AUTO_SCAN_PITCH_RANGE;
+                                    auto_scan_pitch_dir = 1;
+                                }
+
+                                if (world_pit_target > PITCH_UP_LIMIT) world_pit_target = PITCH_UP_LIMIT;
+                                if (world_pit_target < PITCH_DOWN_LIMIT) world_pit_target = PITCH_DOWN_LIMIT;
+                            }
                         }
                     }
+
+                    last_target_valid = target_valid_now;
                 }
 
                 was_auto_mode = (robot_ctrl.gimbal_mode == GIMBAL_AUTO) ? 1U : 0U;
@@ -317,6 +353,7 @@ void gimbal_task_func(void const * argument) {
                 LED_GREEN_RESET(); LED_BLUE_RESET(); LED_RED_SET();
                 was_auto_mode = 0U;
                 auto_scan_pitch_dir = 1;
+                auto_scan_pitch_speed_cur = 0.0f;
                 yaw_ff_filtered = 0.0f;
                 yaw_i_term = 0.0f;
             }
