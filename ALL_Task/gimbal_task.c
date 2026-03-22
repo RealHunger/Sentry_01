@@ -26,10 +26,10 @@
 // ===================== 自瞄丢目标扫描参数 =====================
 #define AUTO_SCAN_LOST_DELAY_MS 120U    // 丢目标持续超过该时间后开始扫描
 #define AUTO_HOLD_ON_VALID_DROP_MS 1000U // valid 从1->0后先保持瞄准1秒
-#define AUTO_SCAN_SPEED_RAD_S   0.8f    // 扫描角速度(rad/s)
+#define AUTO_SCAN_SPEED_RAD_S   1.2f    // 扫描角速度(rad/s)
 #define AUTO_SCAN_PITCH_CENTER  0.0f    // 点头扫描中心角(rad)
 #define AUTO_SCAN_PITCH_RANGE   0.30f   // 点头扫描半幅(rad)
-#define AUTO_SCAN_PITCH_SPEED   1.2f    // 点头扫描角速度(rad/s)
+#define AUTO_SCAN_PITCH_SPEED   0.8f    // 点头扫描角速度(rad/s)
 #define AUTO_SCAN_PITCH_ACCEL   2.0f    // 点头扫描加速度(rad/s^2)，进入扫描后平滑升速
 #define GIMBAL_TASK_DT_S        0.002f  // 本任务周期2ms
 
