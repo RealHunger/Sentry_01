@@ -50,7 +50,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     struct uart_data *pData;
     int len = huart->RxXferSize - huart->RxXferCount;
 
-    HAL_GPIO_TogglePin(LED_BLUE_GPIO_Port, LED_BLUE_Pin);
+    // LED effect is centralized in chassis task; do not toggle LEDs in UART callbacks.
 
     if (huart == &huart1)
     {
@@ -79,7 +79,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
     struct uart_data *pData;
     int len = Size;
 
-    HAL_GPIO_TogglePin(LED_BLUE_GPIO_Port, LED_BLUE_Pin);
+    // LED effect is centralized in chassis task; do not toggle LEDs in UART callbacks.
 
 
     if (huart == &huart1)

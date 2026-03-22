@@ -44,6 +44,10 @@
 #define CHASSIS_VW_ACCEL_UP      2.5f
 #define CHASSIS_VW_ACCEL_DOWN    5.0f
 
+// 裁判比赛阶段：4 为比赛进行中（开赛）
+#define GAME_PROGRESS_BATTLE      4U
+#define LED_OFFLINE_BLINK_MS      200U
+
 /* --- 静态控制变量 --- */
 static float world_yaw_target = 0.0f;
 static float world_pit_target = 0.0f;
@@ -95,6 +99,43 @@ static float Chassis_Slew_Limit(float target, float current, float accel_up, flo
     return current + delta;
 }
 
+static void Chassis_Update_Status_LED(void)
+{
+    static uint32_t last_blink_tick = 0U;
+    static uint8_t red_on = 0U;
+    uint32_t now = osKernelSysTick();
+
+    // 掉线最高优先级：红灯闪烁
+    if (!robot_ctrl.monitor.remote_online) {
+        if ((uint32_t)(now - last_blink_tick) >= LED_OFFLINE_BLINK_MS) {
+            red_on ^= 1U;
+            last_blink_tick = now;
+        }
+
+        LED_BLUE_RESET();
+        LED_GREEN_RESET();
+        if (red_on) {
+            LED_RED_SET();
+        } else {
+            LED_RED_RESET();
+        }
+        return;
+    }
+
+    // 在线状态：开赛绿灯，未开赛红灯
+    uint8_t game_started = (robot_ctrl.game_info.online_301 &&
+                            (robot_ctrl.game_info.game_progress == GAME_PROGRESS_BATTLE)) ? 1U : 0U;
+
+    LED_BLUE_RESET();
+    if (game_started) {
+        LED_GREEN_SET();
+        LED_RED_RESET();
+    } else {
+        LED_GREEN_RESET();
+        LED_RED_SET();
+    }
+}
+
 void chassis_task_func(void const * argument) {
     /******************************************************************************************************************/
     /* 初始化 */
@@ -124,6 +165,7 @@ void chassis_task_func(void const * argument) {
     // 主循环
     while (1) {
         uint32_t current_tick = osKernelSysTick();
+        Chassis_Update_Status_LED();
         float dt_s = 0.002f;
         if (last_ctrl_tick != 0U) {
             uint32_t dt_ms = (uint32_t)(current_tick - last_ctrl_tick);
@@ -227,11 +269,13 @@ void chassis_task_func(void const * argument) {
             // custom_r 由“按住生效”改为“上升沿切换生效”
             uint8_t custom_r_pressed = rc->vt13.rc_vt13.custom_r ? 1U : 0U;
             if (custom_r_pressed && !last_custom_r_pressed && robot_ctrl.monitor.system_enabled) {
+                // 开赛前后都允许切换；实际是否生效由 upper_ctrl_enabled(比赛状态)统一仲裁
                 robot_ctrl.monitor.plan_enabled ^= 1U;
                 LOG_VERBOSE_PRINT("[CHS][PLAN] t=%lu plan=%u\r\n",
                                   (unsigned long)current_tick,
                                   (unsigned int)robot_ctrl.monitor.plan_enabled);
             }
+            // 始终更新防抖状态，避免开赛瞬间边沿丢失
             last_custom_r_pressed = custom_r_pressed;
         }
 
@@ -321,8 +365,13 @@ void chassis_task_func(void const * argument) {
                     if (left_rotate_toggle) vw_kb = -speed_ratio;
                     else if (right_rotate_toggle) vw_kb = speed_ratio;
 
-                    // custom_r 控制模式下，收到有效目标后强制右旋
-                    if (robot_ctrl.monitor.plan_enabled && (robot_ctrl.target_info.valid == 1U)) {
+
+                    uint8_t upper_ctrl_enabled = (robot_ctrl.monitor.plan_enabled &&
+                                                  robot_ctrl.game_info.online_301 &&
+                                                  (robot_ctrl.game_info.game_progress == GAME_PROGRESS_BATTLE)) ? 1U : 0U;
+
+                    // 比赛开始后才允许受上位机目标状态影响
+                    if (upper_ctrl_enabled && (robot_ctrl.target_info.valid == 1U)) {
                         vw_kb = speed_ratio;
                         yaw_align_enable = 0U;
                     }
@@ -334,9 +383,9 @@ void chassis_task_func(void const * argument) {
                     last_q_pressed = q_pressed;
                     last_e_pressed = e_pressed;
 
-                    // 路径规划速度采用切换开关，避免必须持续按住 custom_r
-                    float vx_plan = robot_ctrl.monitor.plan_enabled ? robot_ctrl.chassis.cmd_vx : 0.0f;
-                    float vy_plan = robot_ctrl.monitor.plan_enabled ? robot_ctrl.chassis.cmd_vy : 0.0f;
+                    // 路径规划速度仅在比赛开始后生效，其他时间忽略上位机
+                    float vx_plan = upper_ctrl_enabled ? robot_ctrl.chassis.cmd_vx : 0.0f;
+                    float vy_plan = upper_ctrl_enabled ? robot_ctrl.chassis.cmd_vy : 0.0f;
 
                     float total_vx = vx_rc + vx_kb - vy_plan;
                     float total_vy = vy_rc + vy_kb + vx_plan;
@@ -431,7 +480,7 @@ void chassis_task_func(void const * argument) {
             }
         }
         else {
-            // 遥控器掉线：红灯快闪
+            // 遥控器掉线：仅清零运动，灯效由 Chassis_Update_Status_LED 统一管理
             vx_ramp = 0.0f;
             vy_ramp = 0.0f;
             vw_ramp = 0.0f;

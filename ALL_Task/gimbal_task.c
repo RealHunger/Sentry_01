@@ -5,7 +5,6 @@
 #include "stdlib.h"               // 标准库头文件-通用工具函数
 #include "cmsis_os.h"             // RTOS系统头文件-系统滴答/延时/任务调度
 #include "stdio.h"                // 标准输入输出-调试打印备用
-#include "../../Bsp/led/bsp_led.h"   // LED驱动头文件-状态指示灯控制【保留灯光 不删除】
 #include "../../Components/remote/remote.h" // 遥控器驱动头文件-遥控数据解析
 
 /***********************************************************************************************************************
@@ -121,8 +120,6 @@ void gimbal_task_func(void const * argument) {
             yaw_i_term = 0.0f;
 
 
-            // 指示灯反馈：遥控器掉线 → 红灯闪烁 (全局最高优先级，其他状态被覆盖)
-            LED_GREEN_RESET(); LED_BLUE_RESET(); LED_RED_Toggle();
             osDelay(100);
         }
         // ===================== VT13遥控器在线 正常工作逻辑 =====================
@@ -194,9 +191,6 @@ void gimbal_task_func(void const * argument) {
 
                 /********************* 模式1：云台手动控制【VT13遥控器摇杆+鼠标 复合控制】 *********************/
                 if (robot_ctrl.gimbal_mode == GIMBAL_REMOTE) {
-                    // 指示灯反馈：云台手动使能 → 绿灯常亮
-                    LED_RED_RESET(); LED_BLUE_RESET(); LED_GREEN_SET();
-
                     // VT13遥控器摇杆值处理：死区过滤 + 归一化到[-1,1]区间，消除无效信号
                     float ry = (abs(robot_ctrl.rc->vt13.rc_vt13.ch[2]) > RC_DEADZONE) ? robot_ctrl.rc->vt13.rc_vt13.ch[2] / 660.0f : 0.0f;
                     float rx = (abs(robot_ctrl.rc->vt13.rc_vt13.ch[3]) > RC_DEADZONE) ? robot_ctrl.rc->vt13.rc_vt13.ch[3] / 660.0f : 0.0f;
@@ -230,8 +224,6 @@ void gimbal_task_func(void const * argument) {
 
                     // com_task 已完成视觉数据解析，这里只消费 target_info
                     if (target_valid_now) {
-                        // 指示灯反馈：自瞄模式+有目标 → 蓝灯常亮
-                        LED_RED_RESET(); LED_GREEN_RESET(); LED_BLUE_SET();
                         // 直接赋值视觉解算后的目标角度，云台跟随目标
                         world_yaw_target = robot_ctrl.target_info.aim_target_yaw;
                         world_pit_target = robot_ctrl.target_info.aim_target_pitch;
@@ -245,9 +237,6 @@ void gimbal_task_func(void const * argument) {
                         valid_drop_hold_until_tick = 0U;
 
                     } else {
-                        // 指示灯反馈：自瞄模式+丢目标 → 蓝灯闪烁
-                        LED_RED_RESET(); LED_BLUE_Toggle(); LED_GREEN_RESET();
-
                         // 仅在 valid 1->0 的下降沿触发保持窗口
                         if (last_target_valid == 1U) {
                             valid_drop_hold_until_tick = current_tick + AUTO_HOLD_ON_VALID_DROP_MS;
@@ -349,8 +338,6 @@ void gimbal_task_func(void const * argument) {
             }
             /********************* 模式3：云台失能模式 *********************/
             else if (robot_ctrl.gimbal_mode == GIMBAL_RELAX) {
-                // 指示灯反馈：云台失能 → 红灯常亮
-                LED_GREEN_RESET(); LED_BLUE_RESET(); LED_RED_SET();
                 was_auto_mode = 0U;
                 auto_scan_pitch_dir = 1;
                 auto_scan_pitch_speed_cur = 0.0f;
