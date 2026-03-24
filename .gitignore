@@ -1,0 +1,29 @@
+# Build outputs
+build/
+cmake-build-*/
+
+# STM32 / tool-generated artifacts
+mx.scratch
+*.elf
+*.bin
+*.hex
+*.map
+*.obj
+*.o
+*.d
+
+# CMake / Ninja cache files
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+.ninja_deps
+.ninja_log
+
+# IDE / editor files
+.idea/
+.vscode/
+.settings/
+
+# OS noise
+Thumbs.db
+.DS_Store
