@@ -26,7 +26,7 @@
 - C standard is fixed to C11 in `CMakeLists.txt`.
 - Default generator is Ninja via `CMakePresets.json`.
 - Supported configure/build presets: `Debug`, `RelWithDebInfo`, `Release`, `MinSizeRel`.
-- The main firmware artifact is an ELF executable named after the project, currently `Infantry_01.elf`.
+- The main firmware artifact is an ELF executable named after the project, currently `sentry_chassis.elf`.
 
 ## Build Commands
 - Configure a debug build:
@@ -44,7 +44,7 @@ cmake --build --preset Release
 ```
 - Build a specific target from an existing build directory if needed:
 ```sh
-cmake --build build/Debug --target Infantry_01
+cmake --build build/Debug --target sentry_chassis
 ```
 - Clean by deleting `build/<Preset>/` or using the generator clean target:
 ```sh

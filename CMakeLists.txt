@@ -19,7 +19,7 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # Set the project name
-set(CMAKE_PROJECT_NAME Infantry_01)
+set(CMAKE_PROJECT_NAME sentry_chassis)
 
 # Include toolchain file
 include("cmake/gcc-arm-none-eabi.cmake")
