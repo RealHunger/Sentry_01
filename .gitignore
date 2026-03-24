@@ -1,0 +1,40 @@
+# Build directories
+/build/
+
+# CMake / Ninja artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+build.ninja
+.ninja_deps
+.ninja_log
+
+# Firmware outputs
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.lst
+*.o
+*.obj
+*.a
+*.su
+*.d
+
+# IDE settings
+.idea/
+.vscode/
+
+# OS / editor junk
+*.tmp
+*.log
+*.bak
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+
+# Local tool outputs
+.cache/
