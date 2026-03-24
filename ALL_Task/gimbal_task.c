@@ -25,6 +25,8 @@
 // ===================== 自瞄丢目标扫描参数 =====================
 #define AUTO_SCAN_LOST_DELAY_MS 120U    // 丢目标持续超过该时间后开始扫描
 #define AUTO_HOLD_ON_VALID_DROP_MS 1000U // valid 从1->0后先保持瞄准1秒
+#define GAME_PROGRESS_BATTLE      4U
+#define GAME_TOTAL_DURATION_S     300U
 #define AUTO_SCAN_SPEED_RAD_S   1.2f    // 扫描角速度(rad/s)
 #define AUTO_SCAN_PITCH_CENTER  0.0f    // 点头扫描中心角(rad)
 #define AUTO_SCAN_PITCH_RANGE   0.30f   // 点头扫描半幅(rad)
@@ -209,6 +211,14 @@ void gimbal_task_func(void const * argument) {
 
                 /********************* 模式2：云台自瞄控制【核心优化】解析全局自瞄数据，视觉闭环 *********************/
                 else if (robot_ctrl.gimbal_mode == GIMBAL_AUTO) {
+                    uint8_t game_started_now = (robot_ctrl.game_info.online_301 &&
+                                                (robot_ctrl.game_info.game_progress == GAME_PROGRESS_BATTLE)) ? 1U : 0U;
+                    uint32_t block_s = robot_ctrl.monitor.auto_aim_startup_block_ms / 1000U;
+                    uint32_t auto_aim_enable_remain_threshold_s =
+                            (block_s >= GAME_TOTAL_DURATION_S) ? 0U : (GAME_TOTAL_DURATION_S - block_s);
+                    uint8_t startup_block_active = (game_started_now &&
+                                                    (robot_ctrl.game_info.stage_remain_time >= auto_aim_enable_remain_threshold_s)) ? 1U : 0U;
+
                     if (!was_auto_mode) {
                         auto_scan_active = 0U;
                         auto_scan_pitch_dir = 1;
@@ -217,6 +227,18 @@ void gimbal_task_func(void const * argument) {
                         valid_drop_hold_until_tick = 0U;
                         last_target_valid = 0U;
                     }
+
+                    if (startup_block_active) {
+                        // 开赛初期禁自瞄：冻结目标，且不进入扫描模式，优先赶路。
+                        world_yaw_target = robot_ctrl.gimbal.yaw;
+                        world_pit_target = robot_ctrl.gimbal.pitch;
+                        auto_scan_active = 0U;
+                        auto_scan_pitch_dir = 1;
+                        auto_scan_pitch_speed_cur = 0.0f;
+                        valid_drop_hold_until_tick = 0U;
+                        last_target_valid = 0U;
+                        last_target_seen_tick = current_tick;
+                    } else {
 
                     uint8_t target_valid_now = (robot_ctrl.monitor.vision_online == 1U &&
                                                 isfinite(robot_ctrl.target_info.aim_target_yaw) &&
@@ -290,6 +312,7 @@ void gimbal_task_func(void const * argument) {
                     }
 
                     last_target_valid = target_valid_now;
+                    }
                 }
 
                 was_auto_mode = (robot_ctrl.gimbal_mode == GIMBAL_AUTO) ? 1U : 0U;

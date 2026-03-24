@@ -19,6 +19,12 @@
 #define FIRE_HOLD_START_TICKS  (FIRE_HOLD_START_MS / SHOOT_TASK_PERIOD_MS)
 #define FIRE_BURST_TICKS       (FIRE_BURST_INTERVAL_MS / SHOOT_TASK_PERIOD_MS)
 
+/* 自瞄shoot上升沿触发三连发参数 */
+#define AUTO_BURST_SHOTS        3U
+#define AUTO_BURST_INTERVAL_MS  200U
+#define AUTO_BURST_TICKS        (AUTO_BURST_INTERVAL_MS / SHOOT_TASK_PERIOD_MS)
+#define STIR_TARGET_HOLD_TOL    800
+
 /* Trigger plate step config (output side). */
 #define STIR_ENCODER_CPR           8192.0f
 #define STIR_GEAR_RATIO            36.0f   /* 减速箱 36:1 */
@@ -52,9 +58,12 @@ void shoot_task_func(void const * argument)
 	int32_t stir_target_sum = 0;
 	uint8_t stir_target_inited = 0U;
 	uint8_t last_fire_btn = 0U;
+	uint8_t last_auto_shoot_cmd = 0U;
 	uint16_t fire_hold_ticks = 0U;
 	uint16_t fire_burst_ticks = 0U;
 	uint8_t auto_fire_active = 0U;
+	uint8_t auto_burst_pending = 0U;
+	uint16_t auto_burst_ticks = 0U;
 	uint8_t stir_jam_latched = 0U;
 	uint16_t stir_jam_detect_ticks = 0U;
 	uint16_t stir_jam_recover_ticks = 0U;
@@ -65,6 +74,7 @@ void shoot_task_func(void const * argument)
 	for (;;)
 	{
 		uint8_t fire_cmd = 0U;
+		uint8_t auto_shoot_cmd = 0U;
 		uint8_t reverse_cmd;
 		uint8_t heat_block = 0U;
 		uint8_t fw_offline_block = 0U;
@@ -111,9 +121,12 @@ void shoot_task_func(void const * argument)
 		{
 			stir_target_sum = stir_pos_sum;
 			last_fire_btn = 0U;
+			last_auto_shoot_cmd = 0U;
 			fire_hold_ticks = 0U;
 			fire_burst_ticks = 0U;
 			auto_fire_active = 0U;
+			auto_burst_pending = 0U;
+			auto_burst_ticks = 0U;
 			stir_jam_latched = 0U;
 			stir_jam_detect_ticks = 0U;
 			stir_jam_recover_ticks = 0U;
@@ -129,10 +142,23 @@ void shoot_task_func(void const * argument)
 		}
 		else if (robot_ctrl.gimbal_mode == GIMBAL_AUTO)
 		{
-			/* Auto-aim: upper computer shoot flag directly controls feeding. */
-			fire_cmd = (robot_ctrl.target_info.shoot == 1U)
-					 && (robot_ctrl.shoot_mode == SHOOT_READY)
-					 && (feed_block == 0U);
+			/* Auto-aim: shoot上升沿触发三连发，不跟随高电平持续发射。 */
+			auto_shoot_cmd = (robot_ctrl.target_info.shoot == 1U)
+						 && (robot_ctrl.shoot_mode == SHOOT_READY)
+						 && (feed_block == 0U);
+
+			if (auto_shoot_cmd && (last_auto_shoot_cmd == 0U))
+			{
+				auto_burst_pending = AUTO_BURST_SHOTS;
+				auto_burst_ticks = 0U;
+			}
+			last_auto_shoot_cmd = auto_shoot_cmd;
+		}
+		else
+		{
+			last_auto_shoot_cmd = 0U;
+			auto_burst_pending = 0U;
+			auto_burst_ticks = 0U;
 		}
 
 		if (reverse_cmd)
@@ -141,9 +167,12 @@ void shoot_task_func(void const * argument)
 			stir_m->set_target(stir_m, 2, STIR_REVERSE_SPEED, 1.0);
 			stir_target_sum = stir_pos_sum;
 			last_fire_btn = 0U;
+			last_auto_shoot_cmd = 0U;
 			fire_hold_ticks = 0U;
 			fire_burst_ticks = 0U;
 			auto_fire_active = 0U;
+			auto_burst_pending = 0U;
+			auto_burst_ticks = 0U;
 			stir_jam_latched = 0U;
 			stir_jam_detect_ticks = 0U;
 			stir_jam_recover_ticks = 0U;
@@ -157,9 +186,12 @@ void shoot_task_func(void const * argument)
 				stir_m->set_target(stir_m, 2, STIR_REVERSE_SPEED, 1.0);
 				stir_target_sum = stir_pos_sum;
 				last_fire_btn = 0U;
+				last_auto_shoot_cmd = 0U;
 				fire_hold_ticks = 0U;
 				fire_burst_ticks = 0U;
 				auto_fire_active = 0U;
+				auto_burst_pending = 0U;
+				auto_burst_ticks = 0U;
 
 				if (stir_jam_recover_ticks < STIR_JAM_REVERSE_TICKS)
 				{
@@ -180,9 +212,12 @@ void shoot_task_func(void const * argument)
 				fire_cmd = 0U;
 				stir_target_sum = stir_pos_sum;
 				last_fire_btn = 0U;
+				last_auto_shoot_cmd = 0U;
 				fire_hold_ticks = 0U;
 				fire_burst_ticks = 0U;
 				auto_fire_active = 0U;
+				auto_burst_pending = 0U;
+				auto_burst_ticks = 0U;
 
 				if (stir_jam_cooldown_ticks < STIR_JAM_COOLDOWN_TICKS)
 				{
@@ -225,47 +260,83 @@ void shoot_task_func(void const * argument)
 				stir_jam_detect_ticks = 0U;
 			}
 
-			if (fire_cmd && (last_fire_btn == 0U))
+			if (robot_ctrl.gimbal_mode == GIMBAL_AUTO)
 			{
-				/* 上升沿：先打一发 */
-				stir_target_sum += STIR_STEP_TICKS;
-				fire_hold_ticks = 0U;
-				fire_burst_ticks = 0U;
-				auto_fire_active = 0U;
-			}
-
-			if (fire_cmd)
-			{
-				if (fire_hold_ticks < FIRE_HOLD_START_TICKS)
+				if (auto_burst_pending > 0U)
 				{
-					fire_hold_ticks++;
-				}
-				else
-				{
-					auto_fire_active = 1U;
-				}
-
-				if (auto_fire_active)
-				{
-					if (fire_burst_ticks >= FIRE_BURST_TICKS)
+					fire_cmd = 1U;
+					if (auto_burst_ticks == 0U)
 					{
 						stir_target_sum += STIR_STEP_TICKS;
-						fire_burst_ticks = 0U;
+						auto_burst_pending--;
+						auto_burst_ticks = AUTO_BURST_TICKS;
 					}
 					else
 					{
-						fire_burst_ticks++;
+						auto_burst_ticks--;
 					}
 				}
-			}
-			else
-			{
-				/* 非按下状态每帧锁位：松手/自瞄shoot失效后立即停止拨弹，不执行历史积压目标 */
-				stir_target_sum = stir_pos_sum;
+				else
+				{
+					int32_t pos_err = stir_target_sum - stir_pos_sum;
+					int32_t abs_err = (pos_err >= 0) ? pos_err : -pos_err;
+					fire_cmd = (abs_err > STIR_TARGET_HOLD_TOL) ? 1U : 0U;
+				}
+
+				if (!fire_cmd)
+				{
+					stir_target_sum = stir_pos_sum;
+				}
+
 				last_fire_btn = 0U;
 				fire_hold_ticks = 0U;
 				fire_burst_ticks = 0U;
 				auto_fire_active = 0U;
+			}
+			else
+			{
+				if (fire_cmd && (last_fire_btn == 0U))
+				{
+					/* 上升沿：先打一发 */
+					stir_target_sum += STIR_STEP_TICKS;
+					fire_hold_ticks = 0U;
+					fire_burst_ticks = 0U;
+					auto_fire_active = 0U;
+				}
+
+				if (fire_cmd)
+				{
+					if (fire_hold_ticks < FIRE_HOLD_START_TICKS)
+					{
+						fire_hold_ticks++;
+					}
+					else
+					{
+						auto_fire_active = 1U;
+					}
+
+					if (auto_fire_active)
+					{
+						if (fire_burst_ticks >= FIRE_BURST_TICKS)
+						{
+							stir_target_sum += STIR_STEP_TICKS;
+							fire_burst_ticks = 0U;
+						}
+						else
+						{
+							fire_burst_ticks++;
+						}
+					}
+				}
+				else
+				{
+					/* 非按下状态每帧锁位：松手后立即停止拨弹，不执行历史积压目标 */
+					stir_target_sum = stir_pos_sum;
+					last_fire_btn = 0U;
+					fire_hold_ticks = 0U;
+					fire_burst_ticks = 0U;
+					auto_fire_active = 0U;
+				}
 			}
 
 			/* para_num=1: position mode target */

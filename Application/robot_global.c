@@ -27,4 +27,5 @@ void Robot_Global_Init(void) {
     robot_ctrl.monitor.remote_online = 0;
     robot_ctrl.monitor.system_enabled = 0;
     robot_ctrl.monitor.plan_enabled = 0;
+    robot_ctrl.monitor.auto_aim_startup_block_ms = 5000U;
 }

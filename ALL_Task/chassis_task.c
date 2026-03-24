@@ -47,6 +47,8 @@
 // 裁判比赛阶段：4 为比赛进行中（开赛）
 #define GAME_PROGRESS_BATTLE      4U
 #define LED_OFFLINE_BLINK_MS      200U
+#define AUTO_AIM_STARTUP_BLOCK_MS 3000U
+#define GAME_TOTAL_DURATION_S      300U
 
 /* --- 静态控制变量 --- */
 static float world_yaw_target = 0.0f;
@@ -165,6 +167,9 @@ void chassis_task_func(void const * argument) {
     // 主循环
     while (1) {
         uint32_t current_tick = osKernelSysTick();
+        uint8_t game_started_now = (robot_ctrl.game_info.online_301 &&
+                                    (robot_ctrl.game_info.game_progress == GAME_PROGRESS_BATTLE)) ? 1U : 0U;
+
         Chassis_Update_Status_LED();
         float dt_s = 0.002f;
         if (last_ctrl_tick != 0U) {
@@ -369,9 +374,15 @@ void chassis_task_func(void const * argument) {
                     uint8_t upper_ctrl_enabled = (robot_ctrl.monitor.plan_enabled &&
                                                   robot_ctrl.game_info.online_301 &&
                                                   (robot_ctrl.game_info.game_progress == GAME_PROGRESS_BATTLE)) ? 1U : 0U;
+                    uint32_t block_s = AUTO_AIM_STARTUP_BLOCK_MS / 1000U;
+                    uint32_t auto_aim_enable_remain_threshold_s =
+                            (block_s >= GAME_TOTAL_DURATION_S) ? 0U : (GAME_TOTAL_DURATION_S - block_s);
+                    uint32_t remain_s = robot_ctrl.game_info.stage_remain_time;
+                    // 直接按剩余时间判定：前 block_s 秒不进入自瞄联动
+                    uint8_t startup_block_active = (game_started_now && (remain_s >= auto_aim_enable_remain_threshold_s)) ? 1U : 0U;
 
-                    // 比赛开始后才允许受上位机目标状态影响
-                    if (upper_ctrl_enabled && (robot_ctrl.target_info.valid == 1U)) {
+                    // 开赛后前3秒不进入自瞄联动自转，优先赶路
+                    if (upper_ctrl_enabled && !startup_block_active && (robot_ctrl.target_info.valid == 1U)) {
                         vw_kb = speed_ratio;
                         yaw_align_enable = 0U;
                     }
@@ -445,7 +456,7 @@ void chassis_task_func(void const * argument) {
                         vw_final = -angle_error * FOLLOW_P_GAIN;
                     }
 
-                    if (auto_spin_active) {
+                    if (auto_spin_active && !startup_block_active) {
                         yaw_align_enable = 0U;
                         vw_final = speed_ratio;
                     }

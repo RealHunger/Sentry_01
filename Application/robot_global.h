@@ -102,6 +102,7 @@ typedef struct {
         uint8_t  vision_online;  // 视觉系统在线标志
         uint8_t  system_enabled; // 统一使能状态（1=云台/底盘使能，0=全部失能）
         uint8_t  plan_enabled;   // 底盘路径规划输入开关（custom_r上升沿切换）
+        uint32_t auto_aim_startup_block_ms; // 开赛后延迟启用自瞄时长(ms)
     } monitor;
 
     // 5. 输入引用指针
