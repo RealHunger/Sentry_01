@@ -5,7 +5,7 @@
 #include "Semphr.h"
 #include <stdio.h>
 #include <stdarg.h>
-#include "string.h"
+#include <string.h>
 
 
 
@@ -31,6 +31,15 @@ static struct uart_data g_uart1_data = {
 static struct uart_data g_uart3_data = {
     .handle = &huart3,
 };
+
+static uint16_t uart_rx_restart_size(const UART_HandleTypeDef *huart)
+{
+    if (huart == NULL || huart->RxXferSize == 0U) {
+        return UART_RX_BUFFER_SIZE;
+    }
+
+    return huart->RxXferSize;
+}
 /**********************************************************************************************************************/
 /*回调函数*/
 
@@ -60,7 +69,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
             xQueueSendFromISR(pData->xRxQueue, &pData->rxdatas[i], NULL);
         }
 
-        HAL_UARTEx_ReceiveToIdle_DMA(pData->handle, &pData->rxdatas, huart->RxXferSize);
+        HAL_UARTEx_ReceiveToIdle_DMA(pData->handle, pData->rxdatas, uart_rx_restart_size(huart));
     }
     if (huart == &huart3)
     {
@@ -70,7 +79,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
             xQueueSendFromISR(pData->xRxQueue, &pData->rxdatas[i], NULL);
         }
 
-        HAL_UARTEx_ReceiveToIdle_DMA(pData->handle, &pData->rxdatas, huart->RxXferSize);
+        HAL_UARTEx_ReceiveToIdle_DMA(pData->handle, pData->rxdatas, uart_rx_restart_size(huart));
     }
 }
 
@@ -92,7 +101,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
             xQueueSendFromISR(pData->xRxQueue, &pData->rxdatas[i], NULL);
         }
 
-        HAL_UARTEx_ReceiveToIdle_DMA(pData->handle, &pData->rxdatas, huart->RxXferSize);
+        HAL_UARTEx_ReceiveToIdle_DMA(pData->handle, pData->rxdatas, uart_rx_restart_size(huart));
     }
 
     if (huart == &huart3)
@@ -103,7 +112,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
             xQueueSendFromISR(pData->xRxQueue, &pData->rxdatas[i], NULL);
         }
 
-        HAL_UARTEx_ReceiveToIdle_DMA(pData->handle, &pData->rxdatas, huart->RxXferSize);
+        HAL_UARTEx_ReceiveToIdle_DMA(pData->handle, pData->rxdatas, uart_rx_restart_size(huart));
     }
 }
 
@@ -113,10 +122,15 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 static int uart_it_init(struct uart_device *pDev, int baud, int datas, char  parity, int stop)
 {
     struct uart_data *pData = (struct uart_data *)pDev->priv_data;
+    (void)baud;
+    (void)datas;
+    (void)parity;
+    (void)stop;
+
     pData->xTxSem = xSemaphoreCreateBinary();
     pData->xRxQueue = xQueueCreate(UART_RX_QUEUE_LEN, sizeof(char));
 
-    HAL_UART_Receive_IT(pData->handle, &pData->rxdatas, 1);
+    HAL_UART_Receive_IT(pData->handle, pData->rxdatas, 1);
 
     return 0;
 }
@@ -125,7 +139,7 @@ static int uart_it_send(struct uart_device *pDev, char *data, int len, int timeo
 {
     struct uart_data *pData = (struct uart_data *)pDev->priv_data;
 
-    HAL_UART_Transmit_IT(pData->handle, data, len);
+    HAL_UART_Transmit_IT(pData->handle, (const uint8_t *)data, (uint16_t)len);
 
     if(pdTRUE == xSemaphoreTake(pData->xTxSem, timeout_ms)) {
         return 0;
@@ -160,6 +174,7 @@ int uart_it_printf(struct uart_device *pDev, const char *fmt,...)
 static int uart_it_recv(struct uart_device *pDev, char *data, int max_len, int timeout_ms)
 {
     struct uart_data *pData = (struct uart_data *)pDev->priv_data;
+    (void)max_len;
 
     memset(data, 0, 1);
     if(pdPASS == xQueueReceive(pData->xRxQueue, data, timeout_ms)) {
@@ -187,10 +202,15 @@ static struct uart_device g_uart1_it = {
 static int uart_dma_init(struct uart_device *pDev, int baud, int datas, char  parity, int stop)
 {
     struct uart_data *pData = (struct uart_data *)pDev->priv_data;
+    (void)baud;
+    (void)datas;
+    (void)parity;
+    (void)stop;
+
     pData->xTxSem = xSemaphoreCreateBinary();
     pData->xRxQueue = xQueueCreate(UART_RX_QUEUE_LEN, sizeof(char));
 
-    HAL_UARTEx_ReceiveToIdle_DMA(pData->handle, &pData->rxdatas, UART_RX_BUFFER_SIZE);
+    HAL_UARTEx_ReceiveToIdle_DMA(pData->handle, pData->rxdatas, UART_RX_BUFFER_SIZE);
 
     return 0;
 }
@@ -199,7 +219,7 @@ static int uart_dma_send(struct uart_device *pDev, char *datas, int len, int tim
 {
     struct uart_data *pData = (struct uart_data *)pDev->priv_data;
 
-    HAL_UART_Transmit_DMA(pData->handle, datas, len);
+    HAL_UART_Transmit_DMA(pData->handle, (const uint8_t *)datas, (uint16_t)len);
 
     if(pdTRUE == xSemaphoreTake(pData->xTxSem, timeout_ms)) {
         return 0;
@@ -277,9 +297,9 @@ static struct uart_device g_uart3_dma = {
 
 struct uart_device *g_uart_devs[] = {&g_uart1_it, &g_uart1_dma, &g_uart3_dma};
 
-struct uart_device *uart_get_device(char *name)
+struct uart_device *uart_get_device(const char *name)
 {
-    int i;
+    uint32_t i;
     for (i = 0; i < sizeof(g_uart_devs) / sizeof(g_uart_devs[0]); i++) {
         if (strcmp(g_uart_devs[i]->name, name) == 0) {
             return g_uart_devs[i];

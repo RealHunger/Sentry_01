@@ -12,6 +12,6 @@ struct uart_device
     void *priv_data;
 };
 
-struct uart_device *uart_get_device(char *name);
+struct uart_device *uart_get_device(const char *name);
 
 #endif //DVC_UART_H

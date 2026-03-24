@@ -1,7 +1,7 @@
 # AGENTS.md
 
 ## Purpose
-- This repo is STM32F407 firmware for the `Infantry_01` target.
+- This repo is STM32F407 firmware for the `sentry_gimbal` target.
 - It uses C11, CMake, Ninja, and the STM32 `arm-none-eabi-gcc` toolchain.
 - Handwritten logic mostly lives in `Application/`, `ALL_Task/`, `Bsp/`, `Components/`, and `Algorithm/`.
 - Generated STM32CubeMX/HAL/USB/FreeRTOS code mostly lives in `Core/`, `USB_DEVICE/`, `Drivers/`, `Middlewares/`, and `cmake/stm32cubemx/`.
@@ -17,8 +17,8 @@
 - Presets file: `CMakePresets.json`.
 - Generator: `Ninja`.
 - Toolchain file: `cmake/gcc-arm-none-eabi.cmake`.
-- Main target: `Infantry_01`.
-- Main artifact: `build/<preset>/Infantry_01.elf`.
+- Main target: `sentry_gimbal`.
+- Main artifact: `build/<preset>/sentry_gimbal.elf`.
 - `compile_commands.json` is generated in `build/<preset>/`.
 - `.clangd` is configured to use `build/Debug` as the compilation database.
 
@@ -66,7 +66,7 @@ ninja -C build/Debug -t targets
 
 ### Example: Rebuild One Source File
 ```bash
-cmake --build build/Debug --target "CMakeFiles/Infantry_01.dir/Bsp/uart/bsp_uart.c.obj"
+cmake --build build/Debug --target "CMakeFiles/sentry_gimbal.dir/Bsp/uart/bsp_uart.c.obj"
 ```
 
 ### How To Find An Object Target
@@ -174,7 +174,7 @@ cmake --build --preset Debug
 
 ## Fast Focused Validation
 ```bash
-cmake --build build/Debug --target "CMakeFiles/Infantry_01.dir/path/to/file.c.obj"
+cmake --build build/Debug --target "CMakeFiles/sentry_gimbal.dir/path/to/file.c.obj"
 ```
 
 ## When Unsure
