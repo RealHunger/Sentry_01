@@ -23,9 +23,9 @@
 #define CHASSIS_MAX_RAD         60.0f
 
 // 三档速度配置（可按实车手感直接调参）
-#define CHASSIS_SPEED_GEAR_LOW   0.5f
-#define CHASSIS_SPEED_GEAR_MID   1.0f
-#define CHASSIS_SPEED_GEAR_HIGH  1.5f
+#define CHASSIS_SPEED_GEAR_LOW   0.8f
+#define CHASSIS_SPEED_GEAR_MID   1.6f
+#define CHASSIS_SPEED_GEAR_HIGH  2.5f
 
 // 超级电容低压滞回阈值（capacity_voltage 单位：*100）
 #define CAP_VOLT_ENTER_LOW_GEAR  1500  // <= 8.00V 强制最低档

@@ -1152,6 +1152,7 @@ void GM6020_PV_set_para(const struct motor_device *motor, const char* which_para
     else if (strcmp(which_para, "Kp_v") == 0) d->_kp_v = *(float *)para_data;
     else if (strcmp(which_para, "Ki_v") == 0) d->_ki_v = *(float *)para_data;
     else if (strcmp(which_para, "Kd_v") == 0) d->_kd_v = *(float *)para_data;
+    else if (strcmp(which_para, "Kp_v_only") == 0) d->_kp_v_only = *(float *)para_data;
     else if (strcmp(which_para, "out_max") == 0) d->_out_max = *(float *)para_data;
     else if (strcmp(which_para, "v_limit") == 0) d->_v_limit = *(float *)para_data;
 }

@@ -28,6 +28,8 @@
 
 /* USER CODE BEGIN Includes */
 
+extern PCD_HandleTypeDef hpcd_USB_OTG_FS;
+
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN PV */
@@ -65,6 +67,9 @@ void MX_USB_DEVICE_Init(void)
 {
   /* USER CODE BEGIN USB_DEVICE_Init_PreTreatment */
 
+  HAL_PCD_DevDisconnect(&hpcd_USB_OTG_FS);
+  HAL_Delay(30);
+
   /* USER CODE END USB_DEVICE_Init_PreTreatment */
 
   /* Init Device Library, add supported class and start the library. */
@@ -86,6 +91,8 @@ void MX_USB_DEVICE_Init(void)
   }
 
   /* USER CODE BEGIN USB_DEVICE_Init_PostTreatment */
+
+  HAL_PCD_DevConnect(&hpcd_USB_OTG_FS);
 
   /* USER CODE END USB_DEVICE_Init_PostTreatment */
 }

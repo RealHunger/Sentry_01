@@ -25,26 +25,116 @@
 // ===================== 自瞄丢目标扫描参数 =====================
 #define AUTO_SCAN_LOST_DELAY_MS 120U    // 丢目标持续超过该时间后开始扫描
 #define AUTO_HOLD_ON_VALID_DROP_MS 1000U // valid 从1->0后先保持瞄准1秒
-#define AUTO_SCAN_SPEED_RAD_S   1.2f    // 扫描角速度(rad/s)
+#define AUTO_SCAN_SPEED_RAD_S   2.4f    // 扫描角速度(rad/s)
 #define AUTO_SCAN_PITCH_CENTER  0.0f    // 点头扫描中心角(rad)
 #define AUTO_SCAN_PITCH_RANGE   0.30f   // 点头扫描半幅(rad)
-#define AUTO_SCAN_PITCH_SPEED   0.8f    // 点头扫描角速度(rad/s)
-#define AUTO_SCAN_PITCH_ACCEL   2.0f    // 点头扫描加速度(rad/s^2)，进入扫描后平滑升速
+#define AUTO_SCAN_PITCH_SPEED   2.4f    // 点头扫描角速度(rad/s)
+#define AUTO_SCAN_PITCH_ACCEL   6.0f    // 点头扫描加速度(rad/s^2)，进入扫描后平滑升速
 #define GIMBAL_TASK_DT_S        0.002f  // 本任务周期2ms
 
 // ===================== 云台抗抖参数（底盘自转时优先稳态） =====================
 #define YAW_ERR_DEADBAND_RAD    0.004f  // 小误差死区，抑制抖动
-#define YAW_DAMP_K              0.000f  // 角速度阻尼先关闭，避免持续自转时引入方向相关静差
-#define YAW_FF_ALPHA            0.04f   // 前馈一阶滤波系数（降低起步冲击）
-#define YAW_FF_LIMIT            200.0f  // 前馈限幅，避免瞬态注入过大
-#define YAW_FF_GAIN             2.0f   // 前馈比例系数（稳���偏差交给微积分补偿）
+#define YAW_ERR_DEADBAND_MID    0.0050f // 中速档略放宽死区，减小旋转中的细碎抖动
+#define YAW_ERR_DEADBAND_HIGH   0.0045f // 高速档略收死区，减小稳定后的残余偏差
+#define YAW_DAMP_K_NORMAL       0.000f  // 常规档角速度阻尼
+#define YAW_DAMP_K_MID          0.0012f // 中速档轻阻尼，压抖但不拖慢太多
+#define YAW_DAMP_K_HIGH         0.0014f // 高速档轻阻尼，抑制过冲同时避免过分拖慢
+#define YAW_FF_ALPHA_NORMAL     0.04f   // 常规档前馈一阶滤波系数
+#define YAW_FF_ALPHA_MID        0.032f  // 中速档前馈滤波，兼顾响应和抑抖
+#define YAW_FF_ALPHA_HIGH       0.030f  // 高速档前馈滤波略收，降低起步冲量
+#define YAW_FF_LIMIT_NORMAL     200.0f  // 常规档前馈限幅
+#define YAW_FF_LIMIT_MID        230.0f  // 中速档前馈限幅
+#define YAW_FF_LIMIT_HIGH       280.0f  // 高转速档前馈限幅，适度增强但避免明显过冲
+#define YAW_FF_GAIN_NORMAL      2.0f    // 常规档前馈比例
+#define YAW_FF_GAIN_MID         2.15f   // 中速档前馈比例，补偿1.6档欠冲
+#define YAW_FF_GAIN_HIGH        2.30f   // 高转速档前馈比例，补一点持续高速时的残余跟随误差
 #define YAW_FF_SIGN             1.0f    // 前馈方向（若仍反向偏差，改为 -1.0f）
-#define YAW_FF_STEP_MAX         1.6f    // 前馈每周期最大变化量，抑制起步过头
+#define YAW_FF_STEP_MAX_NORMAL  1.6f    // 常规档前馈每周期最大变化量
+#define YAW_FF_STEP_MAX_MID     2.0f    // 中速档前馈爬升速度
+#define YAW_FF_STEP_MAX_HIGH    2.4f    // 高转速档前馈爬升速度，抑制刚开始的过冲
 
 // 小积分只用于消除稳态微小偏差，避免大误差阶段过积分
-#define YAW_I_GAIN              0.55f
-#define YAW_I_LIMIT             0.10f
-#define YAW_I_ACTIVE_ERR_RAD    0.20f
+#define YAW_I_GAIN_NORMAL       0.55f
+#define YAW_I_GAIN_MID          0.72f
+#define YAW_I_GAIN_HIGH         0.86f
+#define YAW_I_LIMIT_NORMAL      0.10f
+#define YAW_I_LIMIT_MID         0.14f
+#define YAW_I_LIMIT_HIGH        0.18f
+#define YAW_I_ACTIVE_ERR_RAD    0.24f
+
+// ===================== 云台 yaw 高转速档专用参数 =====================
+#define YAW_MID_SPEED_ENTER_RAD_S   70.0f
+#define YAW_MID_SPEED_EXIT_RAD_S    55.0f
+#define YAW_HIGH_SPEED_ENTER_RAD_S  120.0f
+#define YAW_HIGH_SPEED_EXIT_RAD_S   90.0f
+#define YAW_KP_P_NORMAL             420.0f
+#define YAW_KP_P_MID                470.0f
+#define YAW_KP_P_HIGH               520.0f
+#define YAW_KD_P_NORMAL             1.45f
+#define YAW_KD_P_MID                1.30f
+#define YAW_KD_P_HIGH               1.20f
+#define YAW_KP_V_NORMAL             200.0f
+#define YAW_KP_V_MID                235.0f
+#define YAW_KP_V_HIGH               270.0f
+#define YAW_KP_V_ONLY_NORMAL        300.0f
+#define YAW_KP_V_ONLY_MID           360.0f
+#define YAW_KP_V_ONLY_HIGH          420.0f
+#define YAW_OUT_MAX_NORMAL          25000.0f
+#define YAW_OUT_MAX_MID             27000.0f
+#define YAW_OUT_MAX_HIGH            30000.0f
+#define YAW_V_LIMIT_NORMAL          320.0f
+#define YAW_V_LIMIT_MID             400.0f
+#define YAW_V_LIMIT_HIGH            480.0f
+
+typedef enum {
+    YAW_PROFILE_NORMAL = 0,
+    YAW_PROFILE_MID_SPEED,
+    YAW_PROFILE_HIGH_SPEED,
+} yaw_profile_e;
+
+static void yaw_apply_profile(const struct motor_device *yaw_m, yaw_profile_e profile)
+{
+    float kp_p;
+    float kd_p;
+    float kp_v;
+    float kp_v_only;
+    float out_max;
+    float v_limit;
+
+    if (yaw_m == NULL || yaw_m->set_para == NULL) {
+        return;
+    }
+
+    if (profile == YAW_PROFILE_HIGH_SPEED) {
+        kp_p = YAW_KP_P_HIGH;
+        kd_p = YAW_KD_P_HIGH;
+        kp_v = YAW_KP_V_HIGH;
+        kp_v_only = YAW_KP_V_ONLY_HIGH;
+        out_max = YAW_OUT_MAX_HIGH;
+        v_limit = YAW_V_LIMIT_HIGH;
+    } else if (profile == YAW_PROFILE_MID_SPEED) {
+        kp_p = YAW_KP_P_MID;
+        kd_p = YAW_KD_P_MID;
+        kp_v = YAW_KP_V_MID;
+        kp_v_only = YAW_KP_V_ONLY_MID;
+        out_max = YAW_OUT_MAX_MID;
+        v_limit = YAW_V_LIMIT_MID;
+    } else {
+        kp_p = YAW_KP_P_NORMAL;
+        kd_p = YAW_KD_P_NORMAL;
+        kp_v = YAW_KP_V_NORMAL;
+        kp_v_only = YAW_KP_V_ONLY_NORMAL;
+        out_max = YAW_OUT_MAX_NORMAL;
+        v_limit = YAW_V_LIMIT_NORMAL;
+    }
+
+    yaw_m->set_para(yaw_m, "Kp_p", &kp_p);
+    yaw_m->set_para(yaw_m, "Kd_p", &kd_p);
+    yaw_m->set_para(yaw_m, "Kp_v", &kp_v);
+    yaw_m->set_para(yaw_m, "Kp_v_only", &kp_v_only);
+    yaw_m->set_para(yaw_m, "out_max", &out_max);
+    yaw_m->set_para(yaw_m, "v_limit", &v_limit);
+}
 
 static float clampf(float v, float vmin, float vmax)
 {
@@ -95,6 +185,7 @@ void gimbal_task_func(void const * argument) {
     static uint8_t last_target_valid = 0U;    // 上一帧目标有效状态，用于检测 1->0 下降沿
     static float yaw_ff_filtered = 0.0f;     // 底盘自转前馈滤波值
     static float yaw_i_term = 0.0f;          // yaw误差微积分项（仅消静差）
+    static yaw_profile_e yaw_profile = YAW_PROFILE_NORMAL;
     float world_yaw_target = 0.0f;           // 云台世界坐标系 航向角目标值 (弧度)
     float world_pit_target = 0.0f;           // 云台世界坐标系 俯仰角目标值 (弧度)
 
@@ -296,34 +387,86 @@ void gimbal_task_func(void const * argument) {
 
                 /********************* 云台角度闭环输出 + 双重限位保护 【最终防护】 *********************/
                 float cur_yaw, cur_pit;
+                float yaw_ff_gain;
+                float yaw_ff_limit;
+                float yaw_ff_alpha;
+                float yaw_ff_step_max;
+                float yaw_deadband;
+                float yaw_damp_k;
+                float yaw_i_gain;
+                float yaw_i_limit;
+                float abs_yaw_speed = fabsf(robot_ctrl.chassis.yaw_speed);
                 yaw_m->get_status(yaw_m, "POS", &cur_yaw);  // 获取航向轴电机 当前实际角度
                 pit_m->get_status(pit_m, "POS", &cur_pit);  // 获取俯仰轴电机 当前实际角度
 
+                if ((yaw_profile != YAW_PROFILE_HIGH_SPEED) && (abs_yaw_speed >= YAW_HIGH_SPEED_ENTER_RAD_S)) {
+                    yaw_profile = YAW_PROFILE_HIGH_SPEED;
+                    yaw_apply_profile(yaw_m, yaw_profile);
+                } else if ((yaw_profile == YAW_PROFILE_HIGH_SPEED) && (abs_yaw_speed <= YAW_HIGH_SPEED_EXIT_RAD_S)) {
+                    yaw_profile = (abs_yaw_speed >= YAW_MID_SPEED_ENTER_RAD_S) ? YAW_PROFILE_MID_SPEED : YAW_PROFILE_NORMAL;
+                    yaw_apply_profile(yaw_m, yaw_profile);
+                } else if ((yaw_profile == YAW_PROFILE_NORMAL) && (abs_yaw_speed >= YAW_MID_SPEED_ENTER_RAD_S)) {
+                    yaw_profile = YAW_PROFILE_MID_SPEED;
+                    yaw_apply_profile(yaw_m, yaw_profile);
+                } else if ((yaw_profile == YAW_PROFILE_MID_SPEED) && (abs_yaw_speed <= YAW_MID_SPEED_EXIT_RAD_S)) {
+                    yaw_profile = YAW_PROFILE_NORMAL;
+                    yaw_apply_profile(yaw_m, yaw_profile);
+                }
+
+                if (yaw_profile == YAW_PROFILE_HIGH_SPEED) {
+                    yaw_ff_gain = YAW_FF_GAIN_HIGH;
+                    yaw_ff_limit = YAW_FF_LIMIT_HIGH;
+                    yaw_ff_alpha = YAW_FF_ALPHA_HIGH;
+                    yaw_ff_step_max = YAW_FF_STEP_MAX_HIGH;
+                    yaw_deadband = YAW_ERR_DEADBAND_HIGH;
+                    yaw_damp_k = YAW_DAMP_K_HIGH;
+                    yaw_i_gain = YAW_I_GAIN_HIGH;
+                    yaw_i_limit = YAW_I_LIMIT_HIGH;
+                } else if (yaw_profile == YAW_PROFILE_MID_SPEED) {
+                    yaw_ff_gain = YAW_FF_GAIN_MID;
+                    yaw_ff_limit = YAW_FF_LIMIT_MID;
+                    yaw_ff_alpha = YAW_FF_ALPHA_MID;
+                    yaw_ff_step_max = YAW_FF_STEP_MAX_MID;
+                    yaw_deadband = YAW_ERR_DEADBAND_MID;
+                    yaw_damp_k = YAW_DAMP_K_MID;
+                    yaw_i_gain = YAW_I_GAIN_MID;
+                    yaw_i_limit = YAW_I_LIMIT_MID;
+                } else {
+                    yaw_ff_gain = YAW_FF_GAIN_NORMAL;
+                    yaw_ff_limit = YAW_FF_LIMIT_NORMAL;
+                    yaw_ff_alpha = YAW_FF_ALPHA_NORMAL;
+                    yaw_ff_step_max = YAW_FF_STEP_MAX_NORMAL;
+                    yaw_deadband = YAW_ERR_DEADBAND_RAD;
+                    yaw_damp_k = YAW_DAMP_K_NORMAL;
+                    yaw_i_gain = YAW_I_GAIN_NORMAL;
+                    yaw_i_limit = YAW_I_LIMIT_NORMAL;
+                }
+
                 // 云台闭环控制算法：航向角带底盘速度前馈补偿，俯仰角直接位置闭环，保证跟随精度
                 float yaw_err = Rad_Format(world_yaw_target - robot_ctrl.gimbal.yaw);
-                if (fabsf(yaw_err) < YAW_ERR_DEADBAND_RAD) {
+                if (fabsf(yaw_err) < yaw_deadband) {
                     yaw_err = 0.0f;
                 }
 
-                float yaw_ff_raw = clampf((YAW_FF_SIGN * YAW_FF_GAIN) * robot_ctrl.chassis.yaw_speed,
-                                          -YAW_FF_LIMIT, YAW_FF_LIMIT);
+                float yaw_ff_raw = clampf((YAW_FF_SIGN * yaw_ff_gain) * robot_ctrl.chassis.yaw_speed,
+                                          -yaw_ff_limit, yaw_ff_limit);
 
                 // 先限斜率再滤波，减少自转起步时前馈瞬态过冲
                 float ff_delta = yaw_ff_raw - yaw_ff_filtered;
-                if (ff_delta > YAW_FF_STEP_MAX) ff_delta = YAW_FF_STEP_MAX;
-                if (ff_delta < -YAW_FF_STEP_MAX) ff_delta = -YAW_FF_STEP_MAX;
+                if (ff_delta > yaw_ff_step_max) ff_delta = yaw_ff_step_max;
+                if (ff_delta < -yaw_ff_step_max) ff_delta = -yaw_ff_step_max;
                 yaw_ff_filtered += ff_delta;
-                yaw_ff_filtered += YAW_FF_ALPHA * (yaw_ff_raw - yaw_ff_filtered);
+                yaw_ff_filtered += yaw_ff_alpha * (yaw_ff_raw - yaw_ff_filtered);
 
                 // 仅在小误差区启用微积分，专门吃掉稳态残余误差
                 if (fabsf(yaw_err) < YAW_I_ACTIVE_ERR_RAD) {
-                    yaw_i_term += YAW_I_GAIN * yaw_err * GIMBAL_TASK_DT_S;
-                    yaw_i_term = clampf(yaw_i_term, -YAW_I_LIMIT, YAW_I_LIMIT);
+                    yaw_i_term += yaw_i_gain * yaw_err * GIMBAL_TASK_DT_S;
+                    yaw_i_term = clampf(yaw_i_term, -yaw_i_limit, yaw_i_limit);
                 } else {
                     yaw_i_term *= 0.995f;
                 }
 
-                float yaw_out = cur_yaw + yaw_err + yaw_i_term - (YAW_DAMP_K * robot_ctrl.gimbal.yaw_v);
+                float yaw_out = cur_yaw + yaw_err + yaw_i_term - (yaw_damp_k * robot_ctrl.gimbal.yaw_v);
                 float pit_out = cur_pit - (world_pit_target - robot_ctrl.gimbal.pitch);
 
                 // 俯仰角输出值二次限位 【第二道防护，终极防护】防止任何情况超限

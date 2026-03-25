@@ -16,22 +16,90 @@ struct usb_data {
     uint8_t rxdatas[USB_RX_BUFFER_SIZE];
     uint16_t rxlen;
     QueueHandle_t xRxQueue;
+    uint8_t initialized;
+    uint8_t rx_armed;
+    uint8_t last_configured;
 };
 
 static struct usb_data g_usb_data = {
     .handle = &hUsbDeviceFS,
 };
 
+static uint8_t usb_cdc_link_ready(const struct usb_data *pData)
+{
+    if (pData == NULL || pData->handle == NULL) {
+        return 0U;
+    }
+
+    if (pData->handle->dev_state != USBD_STATE_CONFIGURED) {
+        return 0U;
+    }
+
+    if (pData->handle->pClassData == NULL) {
+        return 0U;
+    }
+
+    return 1U;
+}
+
+static void usb_cdc_service_link(struct usb_data *pData)
+{
+    uint8_t configured;
+
+    if (pData == NULL) {
+        return;
+    }
+
+    configured = usb_cdc_link_ready(pData);
+
+    if (!configured) {
+        pData->rx_armed = 0U;
+        pData->last_configured = 0U;
+        return;
+    }
+
+    if ((pData->last_configured == 0U) && (pData->xRxQueue != NULL)) {
+        xQueueReset(pData->xRxQueue);
+    }
+
+    pData->last_configured = 1U;
+
+    if (pData->rx_armed == 0U) {
+        USBD_CDC_SetRxBuffer(pData->handle, pData->rxdatas);
+        if (USBD_CDC_ReceivePacket(pData->handle) == USBD_OK) {
+            pData->rx_armed = 1U;
+        }
+    }
+}
+
 static int usb_cdc_init(struct usb_device *pDev)
 {
     struct usb_data *pData = (struct usb_data *)pDev->priv_data;
+
+    if (pData == NULL) {
+        return -1;
+    }
+
+    if (pData->initialized != 0U) {
+        usb_cdc_service_link(pData);
+        return 0;
+    }
+
     pData->rxlen = 0;
     pData->rxdatas[0] = 0;
-    pData->xRxQueue = xQueueCreate(USB_RX_QUEUE_LEN, sizeof(uint8_t));
+    if (pData->xRxQueue == NULL) {
+        pData->xRxQueue = xQueueCreate(USB_RX_QUEUE_LEN, sizeof(uint8_t));
+        if (pData->xRxQueue == NULL) {
+            return -1;
+        }
+    } else {
+        xQueueReset(pData->xRxQueue);
+    }
 
-    // 初始化接收缓冲区
-    USBD_CDC_SetRxBuffer(pData->handle, pData->rxdatas);
-    USBD_CDC_ReceivePacket(pData->handle);
+    pData->initialized = 1U;
+    pData->rx_armed = 0U;
+    pData->last_configured = 0U;
+    usb_cdc_service_link(pData);
 
     return 0;
 }
@@ -39,6 +107,12 @@ static int usb_cdc_init(struct usb_device *pDev)
 static int usb_cdc_send(struct usb_device *pDev, char *data, int len)
 {
     struct usb_data *pData = (struct usb_data *)pDev->priv_data;
+
+    usb_cdc_service_link(pData);
+
+    if (!usb_cdc_link_ready(pData)) {
+        return 0;
+    }
 
     if (CDC_Transmit_FS((uint8_t *)data, len) == USBD_OK)
         return len;
@@ -52,6 +126,12 @@ static int usb_cdc_printf(struct usb_device *pDev, const char *fmt, ...)
     static uint8_t tx_buf[1024];
     va_list ap;
     uint16_t len;
+
+    usb_cdc_service_link(pData);
+
+    if (!usb_cdc_link_ready(pData)) {
+        return 0;
+    }
 
     va_start(ap, fmt);
     len = vsnprintf((char *)tx_buf, sizeof(tx_buf), fmt, ap);
@@ -67,6 +147,13 @@ static int usb_cdc_recv(struct usb_device *pDev, char *data, int max_len, int ti
 {
     struct usb_data *pData = (struct usb_data *)pDev->priv_data;
     int count = 0;
+
+    usb_cdc_service_link(pData);
+
+    if (pData == NULL || pData->xRxQueue == NULL || !usb_cdc_link_ready(pData)) {
+        return -1;
+    }
+
     memset(data, 0, max_len);
 
     // 等待第一个字符
@@ -90,14 +177,16 @@ void usb_cdc_receive_callback(uint8_t* Buf, uint16_t Len)
 {
     struct usb_data *pData = &g_usb_data;
 
+    if (pData->initialized == 0U || pData->xRxQueue == NULL) {
+        return;
+    }
+
     // 将接收到的数据放入队列
     for (uint32_t i = 0; i < Len; i++) {
         xQueueSendFromISR(pData->xRxQueue, &Buf[i], NULL);
     }
 
-    // 重新启动接收
-    USBD_CDC_SetRxBuffer(pData->handle, pData->rxdatas);
-    USBD_CDC_ReceivePacket(pData->handle);
+    pData->rx_armed = 1U;
 }
 
 struct usb_device g_usb_cdc_dev = {
