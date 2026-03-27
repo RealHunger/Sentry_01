@@ -24,12 +24,23 @@
 
 // 三档速度配置（可按实车手感直接调参）
 #define CHASSIS_SPEED_GEAR_LOW   0.8f
-#define CHASSIS_SPEED_GEAR_MID   1.6f
+#define CHASSIS_SPEED_GEAR_MID   1.3f
 #define CHASSIS_SPEED_GEAR_HIGH  2.5f
 
-// 超级电容低压滞回阈值（capacity_voltage 单位：*100）
-#define CAP_VOLT_ENTER_LOW_GEAR  1500  // <= 8.00V 强制最低档
-#define CAP_VOLT_EXIT_LOW_GEAR   2000  // >= 15.00V 才允许回中档
+// 自瞄周期性机动参数
+#define AUTO_AIM_FORCE_SPIN_INTERVAL_MS   4000U // 自瞄中每隔 4s 触发一次机动
+#define AUTO_AIM_FORCE_SPIN_DURATION_MS    300U // 机动持续 0.2s
+#define AUTO_AIM_FORCE_SWAY_HALF_MS        150U // 前 0.1s 左移，后 0.1s 右移
+#define AUTO_AIM_FORCE_SWAY_SPEED         CHASSIS_SPEED_GEAR_LOW
+
+// 自瞄模式自动提档条件（capacity_voltage 单位：*100）
+#define AUTO_AIM_HIGH_GEAR_HURT_CAP_V      1800  // 受击触发阈值：> 18.0V
+#define AUTO_AIM_HIGH_GEAR_FULL_CAP_V      2550  // 常规触发阈值：> 25.5V
+#define AUTO_AIM_HIGH_GEAR_STOP_CAP_V      1000  // 低于 10.0V 立即退出高速档
+#define AUTO_AIM_HIGH_GEAR_MAX_MS         5000U // 单次高速档最长持续 10s
+
+// 超级电容低压锁档阈值（capacity_voltage 单位：*100）
+#define CAP_VOLT_LOW_GEAR_THRESHOLD       1000  // <= 10.0V 强制最低档，> 10.0V 立即解除
 
 // 回正相关参数
 #define YAW_ALIGN_THRESHOLD     0.05f    // 放宽到位阈值（适配机械误差，约2.86度）
@@ -67,7 +78,15 @@ static uint8_t right_rotate_toggle = 0;  // E键切换：右旋状态（1=右旋
 static uint8_t last_q_pressed = 0;       // 上一帧 Q 键状态（防抖）
 static uint8_t last_e_pressed = 0;       // 上一帧 E 键状态（防抖）
 static uint8_t cap_low_gear_lock = 0;    // 超级电容低压锁档（滞回）
-static uint8_t last_custom_r_pressed = 0;// 上一帧 custom_r 状态（路径规划开关防抖）
+static uint8_t auto_aim_high_gear_latch = 0; // 自瞄模式自动高速档锁存
+static uint32_t auto_aim_high_gear_until_tick = 0U; // 自瞄高速档截止时刻
+static uint8_t last_auto_aim_high_voltage_ok = 0U; // 上一帧是否满足自瞄高压触发条件
+static uint8_t last_auto_aim_high_gear_active = 0U; // 上一帧自瞄是否处于高速档
+static uint8_t auto_aim_force_spin_active = 0U; // 自瞄周期机动状态
+static uint32_t auto_aim_force_spin_start_tick = 0U; // 自瞄周期机动开始时刻
+static uint32_t auto_aim_force_spin_next_tick = 0U; // 下一次自瞄周期机动触发时刻
+static uint16_t last_hp = 0U;            // 上一帧血量，用于检测受击
+static uint8_t hp_initialized = 0U;      // 血量初始化标志
 
 static struct uart_device *log_uart = NULL;
 
@@ -148,9 +167,6 @@ void chassis_task_func(void const * argument) {
     struct motor_device *yaw_m = motor_get_device("GM6020_YAW");
 
     const RC_ctrl_t *rc = robot_ctrl.rc;
-    static uint8_t last_pause_cmd = 0;
-    static uint8_t last_enable_cmd = 0;
-    static uint8_t last_disable_cmd = 0;
     float wheel_targets[4] = {0};
     uint8_t last_remote_online = 0xFFU;
     uint32_t last_diag_tick = 0U;
@@ -184,10 +200,10 @@ void chassis_task_func(void const * argument) {
         uint32_t rc_last_tick = rc->vt13.last_update_tick;
         int32_t rc_tick_diff = (int32_t)(current_tick - rc_last_tick);
         if (rc_tick_diff > 1000) {
-            robot_ctrl.monitor.remote_online = 0;
-            robot_ctrl.monitor.system_enabled = 0;
-            robot_ctrl.monitor.plan_enabled = 0;
-            robot_ctrl.chassis_mode = CHASSIS_RELAX;
+            robot_ctrl.monitor.remote_online = 1U;
+            robot_ctrl.monitor.system_enabled = 1U;
+            robot_ctrl.monitor.plan_enabled = 1U;
+            robot_ctrl.chassis_mode = CHASSIS_FOLLOW;
 
             // 掉线时重置所有标志和保存的速度
             yaw_align_enable = 0;
@@ -199,7 +215,10 @@ void chassis_task_func(void const * argument) {
             right_rotate_toggle = 0;
             last_q_pressed = 0;
             last_e_pressed = 0;
-            last_custom_r_pressed = 0;
+            last_auto_aim_high_gear_active = 0U;
+            auto_aim_force_spin_active = 0U;
+            auto_aim_force_spin_start_tick = 0U;
+            auto_aim_force_spin_next_tick = 0U;
             vx_ramp = 0.0f;
             vy_ramp = 0.0f;
             vw_ramp = 0.0f;
@@ -212,71 +231,9 @@ void chassis_task_func(void const * argument) {
             }
         } else {
             robot_ctrl.monitor.remote_online = 1;
-            /**********************************************************************************************************/
-            // 统一失能/使能按键：pause=切换，C=使能，X=失能
-            uint8_t pause_cmd = rc->vt13.rc_vt13.pause;
-            uint8_t enable_cmd = KEY_PRESSED(rc->vt13.key_vt13.v, KEY_VT13_C);
-            uint8_t disable_cmd = KEY_PRESSED(rc->vt13.key_vt13.v, KEY_VT13_X);
-            uint8_t pause_trigger = (pause_cmd && !last_pause_cmd);
-            uint8_t enable_trigger = (enable_cmd && !last_enable_cmd);
-            uint8_t disable_trigger = (disable_cmd && !last_disable_cmd);
-
-            uint8_t prev_system_enabled = robot_ctrl.monitor.system_enabled;
-
-            // 优先级：X失能 > C使能 > pause切换
-            if (disable_trigger) {
-                robot_ctrl.monitor.system_enabled = 0;
-            } else if (enable_trigger) {
-                robot_ctrl.monitor.system_enabled = 1;
-            } else if (pause_trigger) {
-                robot_ctrl.monitor.system_enabled ^= 1U;
-            }
-
-            if (robot_ctrl.monitor.system_enabled != prev_system_enabled) {
-                LOG_VERBOSE_PRINT("[CHS][SYS_EN] t=%lu %u->%u trig(x/c/p)=%u/%u/%u key=0x%04X pause=%u\r\n",
-                                  (unsigned long)current_tick,
-                                  (unsigned int)prev_system_enabled,
-                                  (unsigned int)robot_ctrl.monitor.system_enabled,
-                                  (unsigned int)disable_trigger,
-                                  (unsigned int)enable_trigger,
-                                  (unsigned int)pause_trigger,
-                                  (unsigned int)rc->vt13.key_vt13.v,
-                                  (unsigned int)pause_cmd);
-            }
-
-            if (!robot_ctrl.monitor.system_enabled && prev_system_enabled) {
-                yaw_align_enable = 0;
-                last_wheel_active = 0;
-                last_qe_active = 0;
-                last_manual_vw = 0.0f;
-                left_rotate_toggle = 0;
-                right_rotate_toggle = 0;
-                last_q_pressed = 0;
-                last_e_pressed = 0;
-                robot_ctrl.monitor.plan_enabled = 0;
-                last_custom_r_pressed = 0;
-                vx_ramp = 0.0f;
-                vy_ramp = 0.0f;
-                vw_ramp = 0.0f;
-            }
-
-            robot_ctrl.chassis_mode = robot_ctrl.monitor.system_enabled ? CHASSIS_FOLLOW : CHASSIS_RELAX;
-
-            last_pause_cmd = pause_cmd;
-            last_enable_cmd = enable_cmd;
-            last_disable_cmd = disable_cmd;
-
-            // custom_r 由“按住生效”改为“上升沿切换生效”
-            uint8_t custom_r_pressed = rc->vt13.rc_vt13.custom_r ? 1U : 0U;
-            if (custom_r_pressed && !last_custom_r_pressed && robot_ctrl.monitor.system_enabled) {
-                // 开赛前后都允许切换；实际是否生效由 upper_ctrl_enabled(比赛状态)统一仲裁
-                robot_ctrl.monitor.plan_enabled ^= 1U;
-                LOG_VERBOSE_PRINT("[CHS][PLAN] t=%lu plan=%u\r\n",
-                                  (unsigned long)current_tick,
-                                  (unsigned int)robot_ctrl.monitor.plan_enabled);
-            }
-            // 始终更新防抖状态，避免开赛瞬间边沿丢失
-            last_custom_r_pressed = custom_r_pressed;
+            robot_ctrl.monitor.system_enabled = 1U;
+            robot_ctrl.monitor.plan_enabled = 1U;
+            robot_ctrl.chassis_mode = CHASSIS_FOLLOW;
         }
 
         if (last_remote_online != robot_ctrl.monitor.remote_online) {
@@ -315,31 +272,112 @@ void chassis_task_func(void const * argument) {
 
                     float vx_kb = 0.0f, vy_kb = 0.0f, vw_kb = 0.0f;
                     float speed_ratio;
+                    float motion_limit_ratio;
+                    float auto_spin_speed_ratio;
+                    uint8_t auto_spin_active = (robot_ctrl.gimbal_mode == GIMBAL_AUTO) ? 1U : 0U;
+                    uint8_t got_hurt_now = 0U;
 
                     // 三档仲裁：低压锁最低档 > Shift最高档 > 默认中档
                     if (robot_ctrl.game_info.online_301) {
                         int16_t cap_v = robot_ctrl.game_info.capacity_voltage;
-                        if (cap_low_gear_lock) {
-                            if (cap_v >= CAP_VOLT_EXIT_LOW_GEAR) {
-                                cap_low_gear_lock = 0U;
-                            }
+
+                        if (!hp_initialized) {
+                            last_hp = robot_ctrl.game_info.current_HP;
+                            hp_initialized = 1U;
                         } else {
-                            if (cap_v <= CAP_VOLT_ENTER_LOW_GEAR) {
-                                cap_low_gear_lock = 1U;
+                            if (robot_ctrl.game_info.current_HP < last_hp) {
+                                got_hurt_now = 1U;
                             }
+                            last_hp = robot_ctrl.game_info.current_HP;
+                        }
+
+                        if (cap_v <= CAP_VOLT_LOW_GEAR_THRESHOLD) {
+                            cap_low_gear_lock = 1U;
+                        } else {
+                            cap_low_gear_lock = 0U;
                         }
                     } else {
                         // 无有效电容电压时不强制限速，避免默认0值导致长期锁慢档
                         cap_low_gear_lock = 0U;
+                        auto_aim_high_gear_latch = 0U;
+                        auto_aim_high_gear_until_tick = 0U;
+                        last_auto_aim_high_voltage_ok = 0U;
+                        hp_initialized = 0U;
                     }
 
                     if (cap_low_gear_lock) {
                         speed_ratio = CHASSIS_SPEED_GEAR_LOW;
+                        auto_aim_high_gear_latch = 0U;
+                        auto_aim_high_gear_until_tick = 0U;
+                        last_auto_aim_high_voltage_ok = 0U;
+                    } else if (auto_spin_active && robot_ctrl.game_info.online_301) {
+                        int16_t cap_v = robot_ctrl.game_info.capacity_voltage;
+                        uint8_t high_voltage_now = (cap_v > AUTO_AIM_HIGH_GEAR_FULL_CAP_V) ? 1U : 0U;
+                        uint8_t high_voltage_trigger = (high_voltage_now && !last_auto_aim_high_voltage_ok) ? 1U : 0U;
+
+                        if (auto_aim_high_gear_latch) {
+                            if ((cap_v < AUTO_AIM_HIGH_GEAR_STOP_CAP_V) ||
+                                ((int32_t)(current_tick - auto_aim_high_gear_until_tick) >= 0)) {
+                                auto_aim_high_gear_latch = 0U;
+                                auto_aim_high_gear_until_tick = 0U;
+                            }
+                        }
+
+                        if (!auto_aim_high_gear_latch &&
+                            (high_voltage_trigger ||
+                             (got_hurt_now && (cap_v > AUTO_AIM_HIGH_GEAR_HURT_CAP_V)))) {
+                            auto_aim_high_gear_latch = 1U;
+                            auto_aim_high_gear_until_tick = current_tick + AUTO_AIM_HIGH_GEAR_MAX_MS;
+                        }
+
+                        last_auto_aim_high_voltage_ok = high_voltage_now;
+                        speed_ratio = auto_aim_high_gear_latch ? CHASSIS_SPEED_GEAR_HIGH : CHASSIS_SPEED_GEAR_MID;
                     } else if (KEY_PRESSED(rc->vt13.key_vt13.v, KEY_VT13_SHIFT)) {
                         speed_ratio = CHASSIS_SPEED_GEAR_HIGH;
+                        auto_aim_high_gear_latch = 0U;
+                        auto_aim_high_gear_until_tick = 0U;
+                        last_auto_aim_high_voltage_ok = 0U;
                     } else {
                         speed_ratio = CHASSIS_SPEED_GEAR_MID;
+                        auto_aim_high_gear_latch = 0U;
+                        auto_aim_high_gear_until_tick = 0U;
+                        last_auto_aim_high_voltage_ok = 0U;
                     }
+
+                    if (!auto_spin_active || auto_aim_high_gear_latch) {
+                        auto_aim_force_spin_active = 0U;
+                        auto_aim_force_spin_start_tick = 0U;
+                        auto_aim_force_spin_next_tick = 0U;
+                    } else {
+                        uint8_t high_to_low_trigger = last_auto_aim_high_gear_active ? 1U : 0U;
+
+                        if (auto_aim_force_spin_active) {
+                            if ((uint32_t)(current_tick - auto_aim_force_spin_start_tick) >= AUTO_AIM_FORCE_SPIN_DURATION_MS) {
+                                auto_aim_force_spin_active = 0U;
+                                auto_aim_force_spin_start_tick = 0U;
+                                auto_aim_force_spin_next_tick = current_tick + AUTO_AIM_FORCE_SPIN_INTERVAL_MS;
+                            }
+                        }
+
+                        if (!auto_aim_force_spin_active) {
+                            if (high_to_low_trigger) {
+                                auto_aim_force_spin_active = 1U;
+                                auto_aim_force_spin_start_tick = current_tick;
+                                auto_aim_force_spin_next_tick = current_tick + AUTO_AIM_FORCE_SPIN_INTERVAL_MS;
+                            } else if (auto_aim_force_spin_next_tick == 0U) {
+                                auto_aim_force_spin_next_tick = current_tick + AUTO_AIM_FORCE_SPIN_INTERVAL_MS;
+                            } else if ((int32_t)(current_tick - auto_aim_force_spin_next_tick) >= 0) {
+                                auto_aim_force_spin_active = 1U;
+                                auto_aim_force_spin_start_tick = current_tick;
+                                auto_aim_force_spin_next_tick = current_tick + AUTO_AIM_FORCE_SPIN_INTERVAL_MS;
+                            }
+                        }
+                    }
+
+                    last_auto_aim_high_gear_active = (auto_spin_active && auto_aim_high_gear_latch) ? 1U : 0U;
+
+                    auto_spin_speed_ratio = speed_ratio;
+                    motion_limit_ratio = speed_ratio;
 
                     if (KEY_PRESSED(rc->vt13.key_vt13.v, KEY_VT13_W)) vy_kb += speed_ratio;
                     if (KEY_PRESSED(rc->vt13.key_vt13.v, KEY_VT13_S)) vy_kb -= speed_ratio;
@@ -377,7 +415,6 @@ void chassis_task_func(void const * argument) {
                     }
 
                     // 自瞄模式联动底盘自转：进入 GIMBAL_AUTO 后底盘持续右旋。
-                    uint8_t auto_spin_active = (robot_ctrl.gimbal_mode == GIMBAL_AUTO) ? 1U : 0U;
 
                     // 更新上一帧按键状态（防抖记录）
                     last_q_pressed = q_pressed;
@@ -390,16 +427,27 @@ void chassis_task_func(void const * argument) {
                     float total_vx = vx_rc + vx_kb - vy_plan;
                     float total_vy = vy_rc + vy_kb + vx_plan;
 
+                    if (auto_spin_active && auto_aim_force_spin_active) {
+                        uint32_t force_elapsed = (uint32_t)(current_tick - auto_aim_force_spin_start_tick);
+                        total_vx = (force_elapsed < AUTO_AIM_FORCE_SWAY_HALF_MS) ? -AUTO_AIM_FORCE_SWAY_SPEED : AUTO_AIM_FORCE_SWAY_SPEED;
+                        total_vy = 0.0f;
+                    }
+
                     // --- B. 各向同性限速 ---
                     float v_norm = sqrtf(total_vx * total_vx + total_vy * total_vy);
-                    if (v_norm > speed_ratio) {
-                        total_vx = total_vx / v_norm * speed_ratio;
-                        total_vy = total_vy / v_norm * speed_ratio;
+                    if (v_norm > motion_limit_ratio) {
+                        total_vx = total_vx / v_norm * motion_limit_ratio;
+                        total_vy = total_vy / v_norm * motion_limit_ratio;
                     }
 
                     // --- B2. 渐加速/渐减速 ---
-                    vx_ramp = Chassis_Slew_Limit(total_vx, vx_ramp, CHASSIS_VX_ACCEL_UP, CHASSIS_VX_ACCEL_DOWN, dt_s);
-                    vy_ramp = Chassis_Slew_Limit(total_vy, vy_ramp, CHASSIS_VY_ACCEL_UP, CHASSIS_VY_ACCEL_DOWN, dt_s);
+                    if (auto_spin_active && auto_aim_force_spin_active) {
+                        vx_ramp = total_vx;
+                        vy_ramp = total_vy;
+                    } else {
+                        vx_ramp = Chassis_Slew_Limit(total_vx, vx_ramp, CHASSIS_VX_ACCEL_UP, CHASSIS_VX_ACCEL_DOWN, dt_s);
+                        vy_ramp = Chassis_Slew_Limit(total_vy, vy_ramp, CHASSIS_VY_ACCEL_UP, CHASSIS_VY_ACCEL_DOWN, dt_s);
+                    }
 
                     // --- C. 跟随与旋转逻辑（扩展：Q/E+拨轮统一回正）---
                     float yaw_m_pos;
@@ -447,7 +495,7 @@ void chassis_task_func(void const * argument) {
 
                     if (auto_spin_active) {
                         yaw_align_enable = 0U;
-                        vw_final = speed_ratio;
+                        vw_final = auto_spin_speed_ratio;
                     }
 
                     vw_ramp = Chassis_Slew_Limit(vw_final, vw_ramp, CHASSIS_VW_ACCEL_UP, CHASSIS_VW_ACCEL_DOWN, dt_s);

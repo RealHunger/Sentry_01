@@ -173,8 +173,6 @@ void gimbal_task_func(void const * argument) {
 
     /**************************************** 【静态状态变量区 - 防抖/状态机/计时专用，无冗余】 ****************************************/
     static uint8_t last_mode_toggle = 0;     // 云台模式切换按键 上一帧状态 - 按键防抖，防止误触
-    static uint8_t last_shoot_on_toggle = 0;    // F 键上一帧状态（起转）
-    static uint8_t last_shoot_off_toggle = 0;   // B 键上一帧状态（停转）
     static uint8_t is_initialized = 0;       // 云台初始化标志位 0-未初始化 1-已初始化 防止上电瞬间角度突变甩动
     static uint8_t was_auto_mode = 0;        // 上一帧是否处于自瞄模式
     static uint8_t auto_scan_active = 0;     // 自瞄丢目标扫描状态
@@ -202,13 +200,10 @@ void gimbal_task_func(void const * argument) {
         // 遥控器超时判定：使用有符号差值，避免并发更新导致无符号下溢误判
         int32_t rc_tick_diff = (int32_t)(current_tick - robot_ctrl.rc->vt13.last_update_tick);
         if (rc_tick_diff > 1000) {
-            robot_ctrl.monitor.remote_online = 0;        // 置位遥控器离线标志位
-            robot_ctrl.monitor.system_enabled = 0;       // 统一使能拉低，避免云台/底盘状态分叉
-            robot_ctrl.monitor.plan_enabled = 0;
-            robot_ctrl.gimbal_mode = GIMBAL_RELAX;       // 云台强制进入失能模式，无动力
-            robot_ctrl.shoot_mode = SHOOT_STOP;          // 发射机构强制停止，所有发射电机归零
-            is_initialized = 0;                          // 云台初始化标志位清零，重连后重新初始化
-            yaw_i_term = 0.0f;
+            robot_ctrl.monitor.remote_online = 1U;       // 遥控器离线不再影响整机运行
+            robot_ctrl.monitor.system_enabled = 1U;
+            robot_ctrl.monitor.plan_enabled = 1U;
+            robot_ctrl.shoot_mode = SHOOT_READY;
 
 
             osDelay(100);
@@ -217,28 +212,14 @@ void gimbal_task_func(void const * argument) {
         else {
             robot_ctrl.monitor.remote_online = 1;  // 置位遥控器在线标志位
 
-            /********************* 发射模式仲裁：S强制起转，C强制停转，N听键盘 *********************/
-            uint8_t shoot_on_cmd = KEY_PRESSED(robot_ctrl.rc->vt13.key_vt13.v, KEY_VT13_F);
-            uint8_t shoot_off_cmd = KEY_PRESSED(robot_ctrl.rc->vt13.key_vt13.v, KEY_VT13_B);
-            uint8_t shoot_on_trigger = (shoot_on_cmd && !last_shoot_on_toggle);
-            uint8_t shoot_off_trigger = (shoot_off_cmd && !last_shoot_off_toggle);
+            /********************* 发射模式仲裁：S强制起转，C强制停转，N档不附带额外功能 *********************/
             uint8_t sw = robot_ctrl.rc->vt13.rc_vt13.sw;
 
             if (sw == RC_SW_S_VT13) {
                 robot_ctrl.shoot_mode = SHOOT_READY;
             } else if (sw == RC_SW_C_VT13) {
                 robot_ctrl.shoot_mode = SHOOT_STOP;
-            } else { /* N档：由键盘控制 */
-                if (shoot_on_trigger) {
-                    robot_ctrl.shoot_mode = SHOOT_READY;
-                }
-                if (shoot_off_trigger) {
-                    robot_ctrl.shoot_mode = SHOOT_STOP;
-                }
             }
-
-            last_shoot_on_toggle = shoot_on_cmd;
-            last_shoot_off_toggle = shoot_off_cmd;
 
             // // VT13遥控器档位切换：S档(发射档) ↔ 其他档 切换，优先级与F键一致
             // if (robot_ctrl.rc->vt13.rc_vt13.sw != last_sw_state) {

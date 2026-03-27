@@ -15,7 +15,7 @@ void Robot_Global_Init(void) {
     // 初始模式设置
     robot_ctrl.gimbal_mode  = GIMBAL_RELAX;
     robot_ctrl.chassis_mode = CHASSIS_RELAX;
-    robot_ctrl.shoot_mode   = SHOOT_STOP;
+    robot_ctrl.shoot_mode   = SHOOT_READY;
 
     RC_Init();
 
@@ -25,6 +25,6 @@ void Robot_Global_Init(void) {
     // 状态标志显式初始化
     robot_ctrl.monitor.sensor_ready = 0;
     robot_ctrl.monitor.remote_online = 0;
-    robot_ctrl.monitor.system_enabled = 0;
-    robot_ctrl.monitor.plan_enabled = 0;
+    robot_ctrl.monitor.system_enabled = 1;
+    robot_ctrl.monitor.plan_enabled = 1;
 }
