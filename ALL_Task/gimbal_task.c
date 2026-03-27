@@ -31,6 +31,9 @@
 #define AUTO_SCAN_PITCH_SPEED   2.4f    // 点头扫描角速度(rad/s)
 #define AUTO_SCAN_PITCH_ACCEL   6.0f    // 点头扫描加速度(rad/s^2)，进入扫描后平滑升速
 #define GIMBAL_TASK_DT_S        0.002f  // 本任务周期2ms
+#define GAME_PROGRESS_BATTLE    4U
+#define GAME_INFO_TIMEOUT_MS    1000U
+#define MATCH_START_RUSH_MS     3000U
 
 // ===================== 云台抗抖参数（底盘自转时优先稳态） =====================
 #define YAW_ERR_DEADBAND_RAD    0.004f  // 小误差死区，抑制抖动
@@ -184,6 +187,9 @@ void gimbal_task_func(void const * argument) {
     static float yaw_ff_filtered = 0.0f;     // 底盘自转前馈滤波值
     static float yaw_i_term = 0.0f;          // yaw误差微积分项（仅消静差）
     static yaw_profile_e yaw_profile = YAW_PROFILE_NORMAL;
+    static uint8_t battle_mode_latched = 0U;
+    static uint8_t last_game_started = 0U;
+    static uint32_t match_start_rush_until_tick = 0U;
     float world_yaw_target = 0.0f;           // 云台世界坐标系 航向角目标值 (弧度)
     float world_pit_target = 0.0f;           // 云台世界坐标系 俯仰角目标值 (弧度)
 
@@ -199,20 +205,13 @@ void gimbal_task_func(void const * argument) {
         /**************************************** 【最高优先级】VT13遥控器掉线全局急停保护 ****************************************/
         // 遥控器超时判定：使用有符号差值，避免并发更新导致无符号下溢误判
         int32_t rc_tick_diff = (int32_t)(current_tick - robot_ctrl.rc->vt13.last_update_tick);
+        robot_ctrl.monitor.remote_online = 1U;
+        robot_ctrl.monitor.system_enabled = 1U;
+        robot_ctrl.monitor.plan_enabled = 1U;
+
         if (rc_tick_diff > 1000) {
-            robot_ctrl.monitor.remote_online = 1U;       // 遥控器离线不再影响整机运行
-            robot_ctrl.monitor.system_enabled = 1U;
-            robot_ctrl.monitor.plan_enabled = 1U;
             robot_ctrl.shoot_mode = SHOOT_READY;
-
-
-            osDelay(100);
-        }
-        // ===================== VT13遥控器在线 正常工作逻辑 =====================
-        else {
-            robot_ctrl.monitor.remote_online = 1;  // 置位遥控器在线标志位
-
-            /********************* 发射模式仲裁：S强制起转，C强制停转，N档不附带额外功能 *********************/
+        } else {
             uint8_t sw = robot_ctrl.rc->vt13.rc_vt13.sw;
 
             if (sw == RC_SW_S_VT13) {
@@ -220,40 +219,70 @@ void gimbal_task_func(void const * argument) {
             } else if (sw == RC_SW_C_VT13) {
                 robot_ctrl.shoot_mode = SHOOT_STOP;
             }
+        }
 
-            // // VT13遥控器档位切换：S档(发射档) ↔ 其他档 切换，优先级与F键一致
-            // if (robot_ctrl.rc->vt13.rc_vt13.sw != last_sw_state) {
-            //     robot_ctrl.shoot_mode = (robot_ctrl.rc->vt13.rc_vt13.sw == RC_SW_S_VT13) ? SHOOT_READY : SHOOT_STOP;
-            //     last_sw_state = robot_ctrl.rc->vt13.rc_vt13.sw;     // 更新档位上一帧状态，用于防抖
-            // }
-            /********************* 云台工作模式：读取统一使能状态，避免与底盘各自切换产生不同步 *********************/
-            // 云台模式切换条件：VT13遥控器自定义左按键 或 鼠标右键 按下 (原先为 VT13 G 键)
-            uint8_t mode_cmd = (robot_ctrl.rc->vt13.rc_vt13.custom_l) || (robot_ctrl.rc->vt13.mouse_vt13.press_r);
-            uint8_t mode_trigger = (mode_cmd && !last_mode_toggle);     // 按键上升沿触发，防抖
+        /********************* 云台工作模式：读取统一使能状态，避免与底盘各自切换产生不同步 *********************/
+        // 云台模式切换条件：VT13遥控器自定义左按键 或 鼠标右键 按下 (原先为 VT13 G 键)
+        uint8_t mode_cmd = (rc_tick_diff <= 1000) ?
+                           ((robot_ctrl.rc->vt13.rc_vt13.custom_l) || (robot_ctrl.rc->vt13.mouse_vt13.press_r)) : 0U;
+        uint8_t mode_trigger = (mode_cmd && !last_mode_toggle);     // 按键上升沿触发，防抖
+        uint8_t game_info_online = (robot_ctrl.game_info.online_301 &&
+                                    (robot_ctrl.game_info.last_tick_301 != 0U) &&
+                                    ((uint32_t)(current_tick - robot_ctrl.game_info.last_tick_301) <= GAME_INFO_TIMEOUT_MS)) ? 1U : 0U;
+        uint8_t game_started = 0U;
+        uint8_t match_start_trigger = 0U;
+        uint8_t match_start_rush_active;
 
-            if (!robot_ctrl.monitor.system_enabled) {
+        if (game_info_online) {
+            battle_mode_latched = (robot_ctrl.game_info.game_progress == GAME_PROGRESS_BATTLE) ? 1U : 0U;
+        }
+        game_started = (robot_ctrl.monitor.plan_enabled && battle_mode_latched) ? 1U : 0U;
+        match_start_trigger = (game_started && !last_game_started) ? 1U : 0U;
+
+        if (match_start_trigger) {
+            match_start_rush_until_tick = current_tick + MATCH_START_RUSH_MS;
+        }
+        match_start_rush_active = (game_started &&
+                                   (match_start_rush_until_tick != 0U) &&
+                                   ((int32_t)(current_tick - match_start_rush_until_tick) < 0)) ? 1U : 0U;
+
+        if (!robot_ctrl.monitor.system_enabled) {
                 robot_ctrl.gimbal_mode = GIMBAL_RELAX;
                 is_initialized = 0;
                 yaw_ff_filtered = 0.0f;
                 yaw_i_term = 0.0f;
-            } else {
-                if (robot_ctrl.gimbal_mode == GIMBAL_RELAX) {
-                    robot_ctrl.gimbal_mode = GIMBAL_REMOTE;
-                    is_initialized = 0;
-                    yaw_i_term = 0.0f;
-                }
-
-                // 触发模式切换：手动 ↔ 自瞄 互切，仅在云台使能状态下有效
-                if (mode_trigger) {
-                    robot_ctrl.gimbal_mode = (robot_ctrl.gimbal_mode == GIMBAL_REMOTE) ? GIMBAL_AUTO : GIMBAL_REMOTE;
-                }
+        } else {
+            if (robot_ctrl.gimbal_mode == GIMBAL_RELAX) {
+                robot_ctrl.gimbal_mode = GIMBAL_REMOTE;
+                is_initialized = 0;
+                yaw_i_term = 0.0f;
             }
 
-            // 更新按键上一帧状态，完成防抖逻辑
-            last_mode_toggle = mode_cmd;
+            if (game_started && !match_start_rush_active) {
+                if (robot_ctrl.gimbal_mode != GIMBAL_AUTO) {
+                    robot_ctrl.gimbal_mode = GIMBAL_AUTO;
+                    is_initialized = 0U;
+                    yaw_i_term = 0.0f;
+                }
+            } else if (match_start_rush_active) {
+                if (robot_ctrl.gimbal_mode == GIMBAL_AUTO) {
+                    robot_ctrl.gimbal_mode = GIMBAL_REMOTE;
+                    is_initialized = 0U;
+                    yaw_i_term = 0.0f;
+                }
+            }
+            // 触发模式切换：手动 ↔ 自瞄 互切，仅在未开赛时有效
+            else if (mode_trigger) {
+                robot_ctrl.gimbal_mode = (robot_ctrl.gimbal_mode == GIMBAL_REMOTE) ? GIMBAL_AUTO : GIMBAL_REMOTE;
+            }
+        }
 
-            /**************************************** 云台角度闭环控制核心逻辑 ****************************************/
-            if (robot_ctrl.gimbal_mode != GIMBAL_RELAX) {  // 云台非失能模式 → 使能，进入角度闭环控制
+        // 更新按键上一帧状态，完成防抖逻辑
+        last_mode_toggle = mode_cmd;
+        last_game_started = game_started;
+
+        /**************************************** 云台角度闭环控制核心逻辑 ****************************************/
+        if (robot_ctrl.gimbal_mode != GIMBAL_RELAX) {  // 云台非失能模式 → 使能，进入角度闭环控制
                 // 云台首次使能初始化：将目标角度同步为当前实际角度，防止上电瞬间角度突变导致云台甩动
                 if (is_initialized == 0) {
                     world_yaw_target = robot_ctrl.gimbal.yaw;
@@ -459,23 +488,22 @@ void gimbal_task_func(void const * argument) {
                 //yaw_m->set_target(yaw_m, 2, yaw_out, 36.0f);
 
                 pit_m->set_target(pit_m, 1, pit_out);
-            }
-            /********************* 模式3：云台失能模式 *********************/
-            else if (robot_ctrl.gimbal_mode == GIMBAL_RELAX) {
-                was_auto_mode = 0U;
-                auto_scan_pitch_dir = 1;
-                auto_scan_pitch_speed_cur = 0.0f;
-                yaw_ff_filtered = 0.0f;
-                yaw_i_term = 0.0f;
-            }
-
-            //调试用：
-            //int16_t yaw_speed;
-            //yaw_m->get_status(yaw_m, "VEL", &yaw_speed);
-            //Uart->Print(Uart, "%d,%f\r\n", yaw_speed, robot_ctrl.chassis.yaw_speed); // 调试打印航向角目标值，单位：mrad
-            //Uart->Print(Uart, "%f,%f\r\n", robot_ctrl.gimbal.yaw, world_yaw_target); // 调试打印航向角目标值，单位：mrad
-
         }
+        /********************* 模式3：云台失能模式 *********************/
+        else if (robot_ctrl.gimbal_mode == GIMBAL_RELAX) {
+            was_auto_mode = 0U;
+            auto_scan_pitch_dir = 1;
+            auto_scan_pitch_speed_cur = 0.0f;
+            yaw_ff_filtered = 0.0f;
+            yaw_i_term = 0.0f;
+        }
+
+        //调试用：
+        //int16_t yaw_speed;
+        //yaw_m->get_status(yaw_m, "VEL", &yaw_speed);
+        //Uart->Print(Uart, "%d,%f\r\n", yaw_speed, robot_ctrl.chassis.yaw_speed); // 调试打印航向角目标值，单位：mrad
+        //Uart->Print(Uart, "%f,%f\r\n", robot_ctrl.gimbal.yaw, world_yaw_target); // 调试打印航向角目标值，单位：mrad
+
         osDelay(2);  // 云台任务调度周期 2ms，固定频率保证控制精度
     }
 }

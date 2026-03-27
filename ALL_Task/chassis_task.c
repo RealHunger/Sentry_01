@@ -16,7 +16,7 @@
 #define MOUSE_PIT_SENS          0.0002f  // 鼠标纵向灵敏度
 #define FOLLOW_P_GAIN           0.5f
 #define RC_DEADZONE             10
-#define YAW_CENTER_OFFSET       1.9f//-1.7f（步兵） //1.9f（哨兵）
+#define YAW_CENTER_OFFSET       2.2f//-1.7f（步兵） //1.9f（哨兵）
 
 // 底盘几何参数配置
 #define MOTOR_RPM_TO_VECTOR     3000.0f
@@ -26,6 +26,7 @@
 #define CHASSIS_SPEED_GEAR_LOW   0.8f
 #define CHASSIS_SPEED_GEAR_MID   1.1f
 #define CHASSIS_SPEED_GEAR_HIGH  2.0f
+#define CHASSIS_SPEED_GEAR_START 3.0f
 
 // 自瞄周期性机动参数
 #define AUTO_AIM_FORCE_SPIN_INTERVAL_MS   4000U // 自瞄中每隔 4s 触发一次机动
@@ -57,6 +58,8 @@
 
 // 裁判比赛阶段：4 为比赛进行中（开赛）
 #define GAME_PROGRESS_BATTLE      4U
+#define GAME_INFO_TIMEOUT_MS      1000U
+#define MATCH_START_RUSH_MS       3000U
 #define LED_OFFLINE_BLINK_MS      200U
 
 /* --- 静态控制变量 --- */
@@ -87,6 +90,9 @@ static uint32_t auto_aim_force_spin_start_tick = 0U; // 自瞄周期机动开始
 static uint32_t auto_aim_force_spin_next_tick = 0U; // 下一次自瞄周期机动触发时刻
 static uint16_t last_hp = 0U;            // 上一帧血量，用于检测受击
 static uint8_t hp_initialized = 0U;      // 血量初始化标志
+static uint8_t battle_mode_latched = 0U;  // 锁存比赛开始状态，避免裁判信息短时抖动打断流程
+static uint8_t last_game_started = 0U;    // 上一帧比赛开始状态
+static uint32_t match_start_rush_until_tick = 0U; // 开赛前冲截止时刻
 
 static struct uart_device *log_uart = NULL;
 
@@ -142,7 +148,10 @@ static void Chassis_Update_Status_LED(void)
     }
 
     // 在线状态：开赛绿灯，未开赛红灯
-    uint8_t game_started = (robot_ctrl.game_info.online_301 &&
+    uint8_t game_info_online = (robot_ctrl.game_info.online_301 &&
+                                (robot_ctrl.game_info.last_tick_301 != 0U) &&
+                                ((uint32_t)(now - robot_ctrl.game_info.last_tick_301) <= GAME_INFO_TIMEOUT_MS)) ? 1U : 0U;
+    uint8_t game_started = (game_info_online &&
                             (robot_ctrl.game_info.game_progress == GAME_PROGRESS_BATTLE)) ? 1U : 0U;
 
     LED_BLUE_RESET();
@@ -200,41 +209,18 @@ void chassis_task_func(void const * argument) {
         uint32_t rc_last_tick = rc->vt13.last_update_tick;
         int32_t rc_tick_diff = (int32_t)(current_tick - rc_last_tick);
         if (rc_tick_diff > 1000) {
-            robot_ctrl.monitor.remote_online = 1U;
-            robot_ctrl.monitor.system_enabled = 1U;
-            robot_ctrl.monitor.plan_enabled = 1U;
-            robot_ctrl.chassis_mode = CHASSIS_FOLLOW;
-
-            // 掉线时重置所有标志和保存的速度
-            yaw_align_enable = 0;
-            last_wheel_active = 0;
-            last_qe_active = 0;
-            last_manual_vw = 0.0f;
-            // 清除 Q/E 切换态与按键防抖，避免断线后滞留旋转状态
-            left_rotate_toggle = 0;
-            right_rotate_toggle = 0;
-            last_q_pressed = 0;
-            last_e_pressed = 0;
-            last_auto_aim_high_gear_active = 0U;
-            auto_aim_force_spin_active = 0U;
-            auto_aim_force_spin_start_tick = 0U;
-            auto_aim_force_spin_next_tick = 0U;
-            vx_ramp = 0.0f;
-            vy_ramp = 0.0f;
-            vw_ramp = 0.0f;
-
             if (last_remote_online != 0U) {
                 LOG_VERBOSE_PRINT("[CHS][TIMEOUT] t=%lu last_rc=%lu dt=%ld\r\n",
                                   (unsigned long)current_tick,
                                   (unsigned long)rc_last_tick,
                                   (long)rc_tick_diff);
             }
-        } else {
-            robot_ctrl.monitor.remote_online = 1;
-            robot_ctrl.monitor.system_enabled = 1U;
-            robot_ctrl.monitor.plan_enabled = 1U;
-            robot_ctrl.chassis_mode = CHASSIS_FOLLOW;
         }
+
+        robot_ctrl.monitor.remote_online = 1U;
+        robot_ctrl.monitor.system_enabled = 1U;
+        robot_ctrl.monitor.plan_enabled = 1U;
+        robot_ctrl.chassis_mode = CHASSIS_FOLLOW;
 
         if (last_remote_online != robot_ctrl.monitor.remote_online) {
             LOG_VERBOSE_PRINT("[CHS][REMOTE] t=%lu online=%u\r\n",
@@ -274,11 +260,34 @@ void chassis_task_func(void const * argument) {
                     float speed_ratio;
                     float motion_limit_ratio;
                     float auto_spin_speed_ratio;
-                    uint8_t auto_spin_active = (robot_ctrl.gimbal_mode == GIMBAL_AUTO) ? 1U : 0U;
+                    uint8_t game_info_online = (robot_ctrl.game_info.online_301 &&
+                                                (robot_ctrl.game_info.last_tick_301 != 0U) &&
+                                                ((uint32_t)(current_tick - robot_ctrl.game_info.last_tick_301) <= GAME_INFO_TIMEOUT_MS)) ? 1U : 0U;
+                    uint8_t game_started;
+                    uint8_t upper_ctrl_enabled = (robot_ctrl.monitor.plan_enabled && game_started) ? 1U : 0U;
+                    uint8_t match_start_trigger = (game_started && !last_game_started) ? 1U : 0U;
+                    uint8_t match_start_rush_active;
+                    uint8_t auto_spin_active;
                     uint8_t got_hurt_now = 0U;
 
+                    if (game_info_online) {
+                        battle_mode_latched = (robot_ctrl.game_info.game_progress == GAME_PROGRESS_BATTLE) ? 1U : 0U;
+                    }
+                    game_started = battle_mode_latched;
+                    upper_ctrl_enabled = (robot_ctrl.monitor.plan_enabled && game_started) ? 1U : 0U;
+                    match_start_trigger = (game_started && !last_game_started) ? 1U : 0U;
+
+                    if (match_start_trigger) {
+                        match_start_rush_until_tick = current_tick + MATCH_START_RUSH_MS;
+                    }
+                    match_start_rush_active = (game_started &&
+                                               (match_start_rush_until_tick != 0U) &&
+                                               ((int32_t)(current_tick - match_start_rush_until_tick) < 0)) ? 1U : 0U;
+                    auto_spin_active = (((robot_ctrl.gimbal_mode == GIMBAL_AUTO) || upper_ctrl_enabled) &&
+                                        !match_start_rush_active) ? 1U : 0U;
+
                     // 三档仲裁：低压锁最低档 > Shift最高档 > 默认中档
-                    if (robot_ctrl.game_info.online_301) {
+                    if (game_info_online) {
                         int16_t cap_v = robot_ctrl.game_info.capacity_voltage;
 
                         if (!hp_initialized) {
@@ -305,12 +314,17 @@ void chassis_task_func(void const * argument) {
                         hp_initialized = 0U;
                     }
 
-                    if (cap_low_gear_lock) {
+                    if (match_start_rush_active) {
+                        speed_ratio = CHASSIS_SPEED_GEAR_START;
+                        auto_aim_high_gear_latch = 0U;
+                        auto_aim_high_gear_until_tick = 0U;
+                        last_auto_aim_high_voltage_ok = 0U;
+                    } else if (cap_low_gear_lock) {
                         speed_ratio = CHASSIS_SPEED_GEAR_LOW;
                         auto_aim_high_gear_latch = 0U;
                         auto_aim_high_gear_until_tick = 0U;
                         last_auto_aim_high_voltage_ok = 0U;
-                    } else if (auto_spin_active && robot_ctrl.game_info.online_301) {
+                    } else if (auto_spin_active && game_info_online) {
                         int16_t cap_v = robot_ctrl.game_info.capacity_voltage;
                         uint8_t high_voltage_now = (cap_v > AUTO_AIM_HIGH_GEAR_FULL_CAP_V) ? 1U : 0U;
                         uint8_t high_voltage_trigger = (high_voltage_now && !last_auto_aim_high_voltage_ok) ? 1U : 0U;
@@ -402,20 +416,6 @@ void chassis_task_func(void const * argument) {
                     // 根据切换状态设置 vw_kb 为固定手动速度（与 speed_ratio 同量级），或保持为 0
                     if (left_rotate_toggle) vw_kb = -speed_ratio;
                     else if (right_rotate_toggle) vw_kb = speed_ratio;
-
-
-                    uint8_t upper_ctrl_enabled = (robot_ctrl.monitor.plan_enabled &&
-                                                  robot_ctrl.game_info.online_301 &&
-                                                  (robot_ctrl.game_info.game_progress == GAME_PROGRESS_BATTLE)) ? 1U : 0U;
-
-                    // 比赛开始后才允许受上位机目标状态影响
-                    if (upper_ctrl_enabled && (robot_ctrl.target_info.valid == 1U)) {
-                        vw_kb = speed_ratio;
-                        yaw_align_enable = 0U;
-                    }
-
-                    // 自瞄模式联动底盘自转：进入 GIMBAL_AUTO 后底盘持续右旋。
-
                     // 更新上一帧按键状态（防抖记录）
                     last_q_pressed = q_pressed;
                     last_e_pressed = e_pressed;
@@ -504,6 +504,7 @@ void chassis_task_func(void const * argument) {
                     // 步骤5：更新上一帧状态记录（供下一帧边缘检测使用）
                     last_wheel_active = current_wheel_active;
                     last_qe_active = current_qe_active;
+                    last_game_started = game_started;
 
                     robot_ctrl.chassis.yaw_speed = vw_final * CHASSIS_MAX_RAD;
 
@@ -525,6 +526,7 @@ void chassis_task_func(void const * argument) {
                 vx_ramp = 0.0f;
                 vy_ramp = 0.0f;
                 vw_ramp = 0.0f;
+                last_game_started = 0U;
             }
         }
         else {

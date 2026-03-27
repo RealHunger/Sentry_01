@@ -5,6 +5,7 @@
 #include "stdio.h"
 
 #define MOTOR_OFFLINE_TIMEOUT_MS 100U
+#define MOTOR_REENABLE_PERIOD_MS 2000U
 
 static void SyncM3508State(motor_runtime_state_t *dst, struct motor_device *m, uint32_t now)
 {
@@ -122,6 +123,7 @@ void motor_task_func(void const * argument) {
     static gimbal_mode_e  last_gimbal_mode  = GIMBAL_RELAX;
     static chassis_mode_e last_chassis_mode = CHASSIS_RELAX;
     static shoot_mode_e   last_shoot_mode   = SHOOT_STOP;
+    static uint32_t last_reenable_tick = 0U;
 
     while (1) {
         uint32_t now = osKernelSysTick();
@@ -161,6 +163,27 @@ void motor_task_func(void const * argument) {
                     chassis[i]->send_enable_cmd(chassis[i]);
             }
             last_chassis_mode = robot_ctrl.chassis_mode;
+        }
+
+        if ((uint32_t)(now - last_reenable_tick) >= MOTOR_REENABLE_PERIOD_MS) {
+            if (robot_ctrl.gimbal_mode != GIMBAL_RELAX) {
+                if (pitch) pitch->send_enable_cmd(pitch);
+                if (yaw)   yaw->send_enable_cmd(yaw);
+            }
+
+            if (robot_ctrl.shoot_mode != SHOOT_STOP) {
+                if (shoot_l) shoot_l->send_enable_cmd(shoot_l);
+                if (shoot_r) shoot_r->send_enable_cmd(shoot_r);
+                if (stir_m)  stir_m->send_enable_cmd(stir_m);
+            }
+
+            if (robot_ctrl.chassis_mode != CHASSIS_RELAX) {
+                for (int i = 0; i < 4; i++) {
+                    if (chassis[i]) chassis[i]->send_enable_cmd(chassis[i]);
+                }
+            }
+
+            last_reenable_tick = now;
         }
 
         /* --- D. 硬件指令下发 (每毫秒执行一次) --- */
