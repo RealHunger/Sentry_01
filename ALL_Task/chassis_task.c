@@ -24,8 +24,8 @@
 
 // 三档速度配置（可按实车手感直接调参）
 #define CHASSIS_SPEED_GEAR_LOW   0.8f
-#define CHASSIS_SPEED_GEAR_MID   1.3f
-#define CHASSIS_SPEED_GEAR_HIGH  2.5f
+#define CHASSIS_SPEED_GEAR_MID   1.1f
+#define CHASSIS_SPEED_GEAR_HIGH  2.0f
 
 // 自瞄周期性机动参数
 #define AUTO_AIM_FORCE_SPIN_INTERVAL_MS   4000U // 自瞄中每隔 4s 触发一次机动
