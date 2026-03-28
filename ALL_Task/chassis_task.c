@@ -26,7 +26,6 @@
 #define CHASSIS_SPEED_GEAR_LOW   0.8f
 #define CHASSIS_SPEED_GEAR_MID   1.1f
 #define CHASSIS_SPEED_GEAR_HIGH  2.0f
-#define CHASSIS_SPEED_GEAR_START 3.0f
 
 // 自瞄周期性机动参数
 #define AUTO_AIM_FORCE_SPIN_INTERVAL_MS   4000U // 自瞄中每隔 4s 触发一次机动
@@ -35,7 +34,7 @@
 #define AUTO_AIM_FORCE_SWAY_SPEED         CHASSIS_SPEED_GEAR_LOW
 
 // 自瞄模式自动提档条件（capacity_voltage 单位：*100）
-#define AUTO_AIM_HIGH_GEAR_HURT_CAP_V      1800  // 受击触发阈值：> 18.0V
+#define AUTO_AIM_HIGH_GEAR_HURT_CAP_V      1500  // 受击触发阈值：> 18.0V
 #define AUTO_AIM_HIGH_GEAR_FULL_CAP_V      2550  // 常规触发阈值：> 25.5V
 #define AUTO_AIM_HIGH_GEAR_STOP_CAP_V      1000  // 低于 10.0V 立即退出高速档
 #define AUTO_AIM_HIGH_GEAR_MAX_MS         5000U // 单次高速档最长持续 10s
@@ -56,8 +55,9 @@
 #define CHASSIS_VW_ACCEL_UP      2.5f
 #define CHASSIS_VW_ACCEL_DOWN    5.0f
 
-// 裁判比赛阶段：4 为比赛进行中（开赛）
+// 裁判比赛阶段：4 为比赛进行中（开赛），5 为比赛结算中（结束）
 #define GAME_PROGRESS_BATTLE      4U
+#define GAME_PROGRESS_SETTLEMENT  5U
 #define GAME_INFO_TIMEOUT_MS      1000U
 #define MATCH_START_RUSH_MS       3000U
 #define LED_OFFLINE_BLINK_MS      200U
@@ -208,6 +208,11 @@ void chassis_task_func(void const * argument) {
         // 遥控器掉线检测：使用快照+有符号差值，避免与中断并发更新导致的无符号下溢误判
         uint32_t rc_last_tick = rc->vt13.last_update_tick;
         int32_t rc_tick_diff = (int32_t)(current_tick - rc_last_tick);
+        uint8_t game_info_online = (robot_ctrl.game_info.online_301 &&
+                                    (robot_ctrl.game_info.last_tick_301 != 0U) &&
+                                    ((uint32_t)(current_tick - robot_ctrl.game_info.last_tick_301) <= GAME_INFO_TIMEOUT_MS)) ? 1U : 0U;
+        uint8_t game_settled = (game_info_online &&
+                                (robot_ctrl.game_info.game_progress == GAME_PROGRESS_SETTLEMENT)) ? 1U : 0U;
         if (rc_tick_diff > 1000) {
             if (last_remote_online != 0U) {
                 LOG_VERBOSE_PRINT("[CHS][TIMEOUT] t=%lu last_rc=%lu dt=%ld\r\n",
@@ -218,9 +223,14 @@ void chassis_task_func(void const * argument) {
         }
 
         robot_ctrl.monitor.remote_online = 1U;
-        robot_ctrl.monitor.system_enabled = 1U;
-        robot_ctrl.monitor.plan_enabled = 1U;
-        robot_ctrl.chassis_mode = CHASSIS_FOLLOW;
+        robot_ctrl.monitor.system_enabled = game_settled ? 0U : 1U;
+        robot_ctrl.monitor.plan_enabled = game_settled ? 0U : 1U;
+        robot_ctrl.chassis_mode = game_settled ? CHASSIS_RELAX : CHASSIS_FOLLOW;
+
+        if (game_settled) {
+            robot_ctrl.gimbal_mode = GIMBAL_RELAX;
+            robot_ctrl.shoot_mode = SHOOT_STOP;
+        }
 
         if (last_remote_online != robot_ctrl.monitor.remote_online) {
             LOG_VERBOSE_PRINT("[CHS][REMOTE] t=%lu online=%u\r\n",
@@ -314,12 +324,7 @@ void chassis_task_func(void const * argument) {
                         hp_initialized = 0U;
                     }
 
-                    if (match_start_rush_active) {
-                        speed_ratio = CHASSIS_SPEED_GEAR_START;
-                        auto_aim_high_gear_latch = 0U;
-                        auto_aim_high_gear_until_tick = 0U;
-                        last_auto_aim_high_voltage_ok = 0U;
-                    } else if (cap_low_gear_lock) {
+                    if (cap_low_gear_lock) {
                         speed_ratio = CHASSIS_SPEED_GEAR_LOW;
                         auto_aim_high_gear_latch = 0U;
                         auto_aim_high_gear_until_tick = 0U;

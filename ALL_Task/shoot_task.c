@@ -30,7 +30,7 @@
 #define STIR_STEP_TICKS ((int32_t)(STIR_STEP_DIR * STIR_ENCODER_CPR * STIR_TOTAL_RATIO * (STIR_STEP_OUTPUT_DEG / 360.0f)))
 
 /* 卡弹堵转自救参数（按实机可继续微调） */
-#define STIR_JAM_CURRENT_THRESH   3500
+#define STIR_JAM_CURRENT_THRESH   2000
 #define STIR_JAM_VEL_THRESH       120
 #define STIR_JAM_DETECT_TICKS     30U   /* 60ms @500Hz */
 #define STIR_JAM_REVERSE_TICKS    80U   /* 160ms @500Hz */

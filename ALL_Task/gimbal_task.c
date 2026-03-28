@@ -32,8 +32,10 @@
 #define AUTO_SCAN_PITCH_ACCEL   6.0f    // 点头扫描加速度(rad/s^2)，进入扫描后平滑升速
 #define GIMBAL_TASK_DT_S        0.002f  // 本任务周期2ms
 #define GAME_PROGRESS_BATTLE    4U
+#define GAME_PROGRESS_SETTLEMENT 5U
 #define GAME_INFO_TIMEOUT_MS    1000U
 #define MATCH_START_RUSH_MS     3000U
+#define MATCH_START_SHOOT_RETRY_MS 2000U
 
 // ===================== 云台抗抖参数（底盘自转时优先稳态） =====================
 #define YAW_ERR_DEADBAND_RAD    0.004f  // 小误差死区，抑制抖动
@@ -41,25 +43,25 @@
 #define YAW_ERR_DEADBAND_HIGH   0.0045f // 高速档略收死区，减小稳定后的残余偏差
 #define YAW_DAMP_K_NORMAL       0.000f  // 常规档角速度阻尼
 #define YAW_DAMP_K_MID          0.0012f // 中速档轻阻尼，压抖但不拖慢太多
-#define YAW_DAMP_K_HIGH         0.0014f // 高速档轻阻尼，抑制过冲同时避免过分拖慢
+#define YAW_DAMP_K_HIGH         0.0019f // 高速档增加阻尼，压住高速跟随时的前冲
 #define YAW_FF_ALPHA_NORMAL     0.04f   // 常规档前馈一阶滤波系数
 #define YAW_FF_ALPHA_MID        0.032f  // 中速档前馈滤波，兼顾响应和抑抖
 #define YAW_FF_ALPHA_HIGH       0.030f  // 高速档前馈滤波略收，降低起步冲量
 #define YAW_FF_LIMIT_NORMAL     200.0f  // 常规档前馈限幅
 #define YAW_FF_LIMIT_MID        230.0f  // 中速档前馈限幅
-#define YAW_FF_LIMIT_HIGH       280.0f  // 高转速档前馈限幅，适度增强但避免明显过冲
+#define YAW_FF_LIMIT_HIGH       230.0f  // 高转速档收一点前馈限幅，减少目标超前
 #define YAW_FF_GAIN_NORMAL      2.0f    // 常规档前馈比例
 #define YAW_FF_GAIN_MID         2.15f   // 中速档前馈比例，补偿1.6档欠冲
-#define YAW_FF_GAIN_HIGH        2.30f   // 高转速档前馈比例，补一点持续高速时的残余跟随误差
+#define YAW_FF_GAIN_HIGH        1.95f   // 高转速档降低前馈比例，避免跟随时冲过头
 #define YAW_FF_SIGN             1.0f    // 前馈方向（若仍反向偏差，改为 -1.0f）
 #define YAW_FF_STEP_MAX_NORMAL  1.6f    // 常规档前馈每周期最大变化量
 #define YAW_FF_STEP_MAX_MID     2.0f    // 中速档前馈爬升速度
-#define YAW_FF_STEP_MAX_HIGH    2.4f    // 高转速档前馈爬升速度，抑制刚开始的过冲
+#define YAW_FF_STEP_MAX_HIGH    1.8f    // 高转速档放慢前馈爬升，减少起转瞬态过冲
 
 // 小积分只用于消除稳态微小偏差，避免大误差阶段过积分
 #define YAW_I_GAIN_NORMAL       0.55f
 #define YAW_I_GAIN_MID          0.72f
-#define YAW_I_GAIN_HIGH         0.86f
+#define YAW_I_GAIN_HIGH         0.68f
 #define YAW_I_LIMIT_NORMAL      0.10f
 #define YAW_I_LIMIT_MID         0.14f
 #define YAW_I_LIMIT_HIGH        0.18f
@@ -72,22 +74,22 @@
 #define YAW_HIGH_SPEED_EXIT_RAD_S   90.0f
 #define YAW_KP_P_NORMAL             420.0f
 #define YAW_KP_P_MID                470.0f
-#define YAW_KP_P_HIGH               520.0f
+#define YAW_KP_P_HIGH               480.0f
 #define YAW_KD_P_NORMAL             1.45f
 #define YAW_KD_P_MID                1.30f
-#define YAW_KD_P_HIGH               1.20f
+#define YAW_KD_P_HIGH               1.55f
 #define YAW_KP_V_NORMAL             200.0f
 #define YAW_KP_V_MID                235.0f
-#define YAW_KP_V_HIGH               270.0f
+#define YAW_KP_V_HIGH               235.0f
 #define YAW_KP_V_ONLY_NORMAL        300.0f
 #define YAW_KP_V_ONLY_MID           360.0f
-#define YAW_KP_V_ONLY_HIGH          420.0f
+#define YAW_KP_V_ONLY_HIGH          340.0f
 #define YAW_OUT_MAX_NORMAL          25000.0f
 #define YAW_OUT_MAX_MID             27000.0f
-#define YAW_OUT_MAX_HIGH            30000.0f
+#define YAW_OUT_MAX_HIGH            27000.0f
 #define YAW_V_LIMIT_NORMAL          320.0f
 #define YAW_V_LIMIT_MID             400.0f
-#define YAW_V_LIMIT_HIGH            480.0f
+#define YAW_V_LIMIT_HIGH            420.0f
 
 typedef enum {
     YAW_PROFILE_NORMAL = 0,
@@ -190,6 +192,9 @@ void gimbal_task_func(void const * argument) {
     static uint8_t battle_mode_latched = 0U;
     static uint8_t last_game_started = 0U;
     static uint32_t match_start_rush_until_tick = 0U;
+    static uint32_t match_start_shoot_force_until_tick = 0U;
+    static uint32_t match_start_shoot_retry_tick = 0U;
+    static uint8_t match_start_shoot_retry_done = 0U;
     float world_yaw_target = 0.0f;           // 云台世界坐标系 航向角目标值 (弧度)
     float world_pit_target = 0.0f;           // 云台世界坐标系 俯仰角目标值 (弧度)
 
@@ -206,20 +211,6 @@ void gimbal_task_func(void const * argument) {
         // 遥控器超时判定：使用有符号差值，避免并发更新导致无符号下溢误判
         int32_t rc_tick_diff = (int32_t)(current_tick - robot_ctrl.rc->vt13.last_update_tick);
         robot_ctrl.monitor.remote_online = 1U;
-        robot_ctrl.monitor.system_enabled = 1U;
-        robot_ctrl.monitor.plan_enabled = 1U;
-
-        if (rc_tick_diff > 1000) {
-            robot_ctrl.shoot_mode = SHOOT_READY;
-        } else {
-            uint8_t sw = robot_ctrl.rc->vt13.rc_vt13.sw;
-
-            if (sw == RC_SW_S_VT13) {
-                robot_ctrl.shoot_mode = SHOOT_READY;
-            } else if (sw == RC_SW_C_VT13) {
-                robot_ctrl.shoot_mode = SHOOT_STOP;
-            }
-        }
 
         /********************* 云台工作模式：读取统一使能状态，避免与底盘各自切换产生不同步 *********************/
         // 云台模式切换条件：VT13遥控器自定义左按键 或 鼠标右键 按下 (原先为 VT13 G 键)
@@ -229,9 +220,16 @@ void gimbal_task_func(void const * argument) {
         uint8_t game_info_online = (robot_ctrl.game_info.online_301 &&
                                     (robot_ctrl.game_info.last_tick_301 != 0U) &&
                                     ((uint32_t)(current_tick - robot_ctrl.game_info.last_tick_301) <= GAME_INFO_TIMEOUT_MS)) ? 1U : 0U;
+        uint8_t game_settled = (game_info_online &&
+                                (robot_ctrl.game_info.game_progress == GAME_PROGRESS_SETTLEMENT)) ? 1U : 0U;
         uint8_t game_started = 0U;
         uint8_t match_start_trigger = 0U;
+        uint8_t match_start_shoot_force_active = 0U;
+        uint8_t match_start_shoot_retry_trigger = 0U;
         uint8_t match_start_rush_active;
+
+        robot_ctrl.monitor.system_enabled = game_settled ? 0U : 1U;
+        robot_ctrl.monitor.plan_enabled = game_settled ? 0U : 1U;
 
         if (game_info_online) {
             battle_mode_latched = (robot_ctrl.game_info.game_progress == GAME_PROGRESS_BATTLE) ? 1U : 0U;
@@ -241,10 +239,43 @@ void gimbal_task_func(void const * argument) {
 
         if (match_start_trigger) {
             match_start_rush_until_tick = current_tick + MATCH_START_RUSH_MS;
+            match_start_shoot_force_until_tick = current_tick + MATCH_START_SHOOT_RETRY_MS;
+            match_start_shoot_retry_tick = current_tick + MATCH_START_SHOOT_RETRY_MS;
+            match_start_shoot_retry_done = 0U;
         }
         match_start_rush_active = (game_started &&
                                    (match_start_rush_until_tick != 0U) &&
                                    ((int32_t)(current_tick - match_start_rush_until_tick) < 0)) ? 1U : 0U;
+        match_start_shoot_force_active = (game_started &&
+                                          (match_start_shoot_force_until_tick != 0U) &&
+                                          ((int32_t)(current_tick - match_start_shoot_force_until_tick) < 0)) ? 1U : 0U;
+        match_start_shoot_retry_trigger = (game_started &&
+                                           (match_start_shoot_retry_done == 0U) &&
+                                           (match_start_shoot_retry_tick != 0U) &&
+                                           ((int32_t)(current_tick - match_start_shoot_retry_tick) >= 0)) ? 1U : 0U;
+
+        if (!game_started) {
+            match_start_shoot_force_until_tick = 0U;
+            match_start_shoot_retry_done = 0U;
+            match_start_shoot_retry_tick = 0U;
+        }
+
+        if (game_settled) {
+            robot_ctrl.shoot_mode = SHOOT_STOP;
+        } else if (game_started || match_start_shoot_force_active || match_start_shoot_retry_trigger) {
+            robot_ctrl.shoot_mode = SHOOT_READY;
+            if (match_start_shoot_retry_trigger) {
+                match_start_shoot_retry_done = 1U;
+            }
+        } else if (rc_tick_diff <= 1000) {
+            uint8_t sw = robot_ctrl.rc->vt13.rc_vt13.sw;
+
+            if (sw == RC_SW_S_VT13) {
+                robot_ctrl.shoot_mode = SHOOT_READY;
+            } else if (sw == RC_SW_C_VT13) {
+                robot_ctrl.shoot_mode = SHOOT_STOP;
+            }
+        }
 
         if (!robot_ctrl.monitor.system_enabled) {
                 robot_ctrl.gimbal_mode = GIMBAL_RELAX;

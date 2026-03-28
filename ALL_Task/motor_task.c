@@ -6,6 +6,8 @@
 
 #define MOTOR_OFFLINE_TIMEOUT_MS 100U
 #define MOTOR_REENABLE_PERIOD_MS 2000U
+#define GAME_PROGRESS_BATTLE     4U
+#define GAME_INFO_TIMEOUT_MS     1000U
 
 static void SyncM3508State(motor_runtime_state_t *dst, struct motor_device *m, uint32_t now)
 {
@@ -127,6 +129,7 @@ void motor_task_func(void const * argument) {
 
     while (1) {
         uint32_t now = osKernelSysTick();
+
         /* --- A. 边缘触发：云台使能控制 --- */
         if (robot_ctrl.gimbal_mode != last_gimbal_mode) {
             if (robot_ctrl.gimbal_mode == GIMBAL_RELAX) {
@@ -172,8 +175,6 @@ void motor_task_func(void const * argument) {
             }
 
             if (robot_ctrl.shoot_mode != SHOOT_STOP) {
-                if (shoot_l) shoot_l->send_enable_cmd(shoot_l);
-                if (shoot_r) shoot_r->send_enable_cmd(shoot_r);
                 if (stir_m)  stir_m->send_enable_cmd(stir_m);
             }
 

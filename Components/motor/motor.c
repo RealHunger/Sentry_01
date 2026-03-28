@@ -1113,7 +1113,7 @@ void GM6020_PV_V_update(struct motor_device *motor) {
     // 3. 纯速度环计算
     float v_only_out = d->_v_des * d->_kp_v_only;
 
-    // 3. 输出限幅
+    // 4. 输出限幅
     float total_out = v_p_out + d->_i_term_v + v_d_out + v_only_out;
     if (total_out > d->_out_max) total_out = d->_out_max;
     if (total_out < -d->_out_max) total_out = -d->_out_max;

@@ -15,7 +15,7 @@ void Robot_Global_Init(void) {
     // 初始模式设置
     robot_ctrl.gimbal_mode  = GIMBAL_RELAX;
     robot_ctrl.chassis_mode = CHASSIS_RELAX;
-    robot_ctrl.shoot_mode   = SHOOT_READY;
+    robot_ctrl.shoot_mode   = SHOOT_STOP;
 
     RC_Init();
 
